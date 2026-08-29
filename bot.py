@@ -1,5 +1,4 @@
 import os
-import time
 import json
 import requests
 from bs4 import BeautifulSoup
@@ -8,24 +7,32 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-# Сторінка оренди квартир у Хмельницькому від власників
+# Хмарна база даних для збереження переглянутих оголошень (щоб не злітала при перезапуску)
+# Унікальний ключ для твого бота
+DB_URL = "https://kvdb.io/8N9z2XmQpL4vW1yK7jR3tA/seen_ads_khm"
+
 URL = "https://lun.ua/uk/%D0%BE%D1%80%D0%B5%D0%BD%D0%B4%D0%B0-%D0%BA%D0%B2%D0%B0%D1%80%D1%82%D0%B8%D1%80-%D1%85%D0%BC%D0%B5%D0%BB%D1%8C%D0%BD%D0%B8%D1%86%D1%8C%D0%BA%D0%B8%D0%B9-%D0%B1%D0%B5%D0%B7-%D0%BF%D0%BE%D1%81%D0%B5%D1%80%D0%B5%D0%B4%D0%BD%D0%B8%D0%BA%D1%96%D0%B2"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-SEEN_FILE = "seen_ads.txt"
-
 def load_seen_ids():
-    if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE, "r") as f:
-            return set(line.strip() for line in f if line.strip())
+    try:
+        res = requests.get(DB_URL, timeout=5)
+        if res.status_code == 200 and res.text:
+            return set(res.text.split(","))
+    except Exception as e:
+        print(f"Помилка читання Хмари: {e}")
     return set()
 
-def save_seen_id(ad_id):
-    with open(SEEN_FILE, "a") as f:
-        f.write(f"{ad_id}\n")
+def save_seen_ids(seen_set):
+    try:
+        # Зберігаємо тільки останні 200 оголошень, щоб не перевантажувати базу
+        data_to_save = ",".join(list(seen_set)[-200:])
+        requests.post(DB_URL, data=data_to_save, timeout=5)
+    except Exception as e:
+        print(f"Помилка запису в Хмару: {e}")
 
 def send_telegram(text):
     if not BOT_TOKEN or not CHAT_ID:
@@ -42,7 +49,7 @@ def parse_lun():
     seen_ids = load_seen_ids()
     is_first_run = len(seen_ids) == 0
 
-    print("🔎 Запуск сканування ЛУН через JSON...")
+    print(f"🔎 Сканування... Завантажено з хмари {len(seen_ids)} бачених хат.")
 
     try:
         res = requests.get(URL, headers=HEADERS, timeout=15)
@@ -51,15 +58,14 @@ def parse_lun():
             return
 
         soup = BeautifulSoup(res.text, "html.parser")
-        script_tag = soup.find("script", id="NEXT_DATA")
+        script_tag = soup.find("script", id="__NEXT_DATA__")
 
         if not script_tag:
-            print("⚠️ Не знайдено блок NEXT_DATA")
+            print("⚠️ Не знайдено блок __NEXT_DATA__")
             return
 
         data = json.loads(script_tag.string)
         
-        # Рекурсивний пошук масивів оголошень у структурі JSON
         realties = []
         def extract_items(obj):
             if isinstance(obj, dict):
@@ -86,14 +92,14 @@ def parse_lun():
             if ad_id in seen_ids:
                 continue
 
+            # Додаємо нове ID
             seen_ids.add(ad_id)
-            save_seen_id(ad_id)
 
-            # Якщо це найперший запуск — просто запам'ятовуємо старі хати без спаму в ТГ
+            # Якщо це найперший запуск бази взагалі — фіксуємо без відправки
             if is_first_run:
                 continue
 
-            # Збираємо дані для повідомлення
+            # Формуємо повідомлення
             title = item.get("title") or item.get("heading") or "Квартира від власника"
             price = item.get("price") or item.get("price_uah") or "Ціна не вказана"
             if isinstance(price, dict):
@@ -112,14 +118,17 @@ def parse_lun():
             send_telegram(msg)
             new_count += 1
 
+        # Зберігаємо оновлений список у хмару
+        save_seen_ids(seen_ids)
+
         if is_first_run:
-            print(f"✅ Базу ініціалізовано. Запам'ятовано {len(seen_ids)} існуючих оголошень.")
-            send_telegram("🎯 <b>Бот-снайпер переведений на JSON-тепловізор 2.0!</b> Тепер жодна хата не проскочить.")
+            print(f"✅ Хмарну базу ініціалізовано ({len(seen_ids)} хат).")
+            send_telegram("🛡️ <b>Бот підключив залізобетонну Хмарну Пам'ять!</b> Тепер ніякі перезапуски не зіб'ють приціл.")
         else:
             print(f"✅ Сканування завершено. Нових оголошень: {new_count}")
 
     except Exception as e:
         print(f"Помилка при скануванні: {e}")
 
-if name == "main":
+if __name__ == "__main__":
     parse_lun()
