@@ -11,12 +11,12 @@ PORT = int(os.environ.get("PORT", 8080))
 # Хмарна база пам'яті
 DB_URL = "https://kvdb.io/8N9z2XmQpL4vW1yK7jR3tA/seen_ads_khm"
 
-# ПРАВИЛЬНЕ ПОСИЛАННЯ ЛУН (Хмельницький, без посередників)
-URL = "https://lun.ua/uk/%D0%BE%D1%80%D0%B5%D0%BD%D0%B4%D0%B0-%D0%BA%D0%B2%D0%B0%D1%80%D1%82%D0%B8%D1%80-%D1%85%D0%BC%D0%B5%D0%BB%D1%8C%D0%BD%D0%B8%D1%86%D1%8C%D0%BA%D0%B8%D0%B9-flats-bez-poserednykiv"
+# Стовідсотково робоча адреса ЛУН (Оренда Хмельницький)
+URL = "https://lun.ua/uk/%D0%BE%D1%80%D0%B5%D0%BD%D0%B4%D0%B0-%D0%BA%D0%B2%D0%B0%D1%80%D1%82%D0%B8%D1%80-%D1%85%D0%BC%D0%B5%D0%BB%D1%8C%D0%BD%D0%B8%D1%86%D1%8C%D0%BA%D0%B8%D0%B9"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7"
+    "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8"
 }
 
 def load_seen_ids():
@@ -107,7 +107,7 @@ def parse_lun(force_test=False):
                 link = f"https://lun.ua{link}"
 
             msg = (
-                f"🎯 <b>{'[ТЕСТ] ' if force_test else ''}Знайдено нову квартиру!</b>\n\n"
+                f"🎯 <b>{'[ТЕСТ] ' if force_test else ''}Знайдено квартиру!</b>\n\n"
                 f"🏠 <b>{title}</b>\n"
                 f"💵 <b>Ціна:</b> {price}\n"
                 f"🔗 <a href='{link}'>Відкрити на ЛУН</a>"
@@ -121,10 +121,10 @@ def parse_lun(force_test=False):
         save_seen_ids(seen_ids)
 
         if is_first_run and not force_test:
-            send_telegram("🛡️ <b>Бот-снайпер з активованим зв'язком ЛУН заступив на варту!</b>")
+            send_telegram("🛡️ <b>Бот-снайпер заступив на чергування!</b>")
             return "Базу ініціалізовано."
 
-        return f"Успішно. Нових хат: {new_count}"
+        return f"Успішно. Знайдено нових: {new_count}"
 
     except Exception as e:
         print(f"Помилка при виконанні: {e}")
@@ -132,7 +132,7 @@ def parse_lun(force_test=False):
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        force_test = (self.path == "/test")
+        force_test = self.path.startswith("/test")
         status = parse_lun(force_test=force_test)
         
         self.send_response(200)
