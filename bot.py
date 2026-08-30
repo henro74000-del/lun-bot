@@ -15,12 +15,14 @@ scraper = cloudscraper.create_scraper(
 
 OLX_SOURCES = [
     ("OLX Оренда Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private"),
-    ("OLX Продаж Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private")
+    ("OLX Продаж Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private"),
+    ("OLX Оренда Буд.", "https://www.olx.ua/uk/nedvizhimost/doma/arenda-domov/khmelnitskiy/?search%5Bprivate_business%5D=private"),
+    ("OLX Продаж Буд.", "https://www.olx.ua/uk/nedvizhimost/doma/prodazha-domov/khmelnitskiy/?search%5Bprivate_business%5D=private")
 ]
 
 DIMRIA_SOURCES = [
-    ("DIM.RIA Оренда", "https://dom.ria.com/uk/orenda-kvartyr/khmelnytskyi/?without_realtor=1"),
-    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazh-kvartyr/khmelnytskyi/?without_realtor=1")
+    ("DIM.RIA Оренда Квар.", "https://dom.ria.com/uk/orenda-kvartyr/khmelnytskyi/?without_realtor=1"),
+    ("DIM.RIA Продаж Квар.", "https://dom.ria.com/uk/prodazh-kvartyr/khmelnytskyi/?without_realtor=1")
 ]
 
 SEEN_ADS = set()
@@ -52,14 +54,32 @@ def scan_olx():
                 continue
 
             soup = BeautifulSoup(res.text, "html.parser")
-            for a in soup.find_all("a", href=True):
+            # Шукаємо картки оголошень на OLX
+            cards = soup.find_all("div", {"data-testid": "l-card"})
+            
+            for card in cards:
+                a = card.find("a", href=True)
+                if not a:
+                    continue
                 href = a["href"]
-                if "/d/uk/obyavlenie/" in href or "/d/obyavlenie/" in href:
-                    clean_url = href if href.startswith("http") else f"https://www.olx.ua{href}"
-                    ad_id = clean_url.split(".html")[0].split("-")[-1]
-                    title = a.get_text(strip=True) or label
-                    if len(title) > 3:
-                        found.append({"id": f"olx_{ad_id}", "title": title, "url": clean_url, "source": "OLX (Власник)"})
+                clean_url = href if href.startswith("http") else f"https://www.olx.ua{href}"
+                ad_id = clean_url.split(".html")[0].split("-")[-1]
+
+                # Заголовок (часто містить кількість кімнат та район)
+                title_el = card.find("h6") or card.find("h4")
+                title = title_el.get_text(strip=True) if title_el else label
+
+                # Ціна
+                price_el = card.find("p", {"data-testid": "ad-price"})
+                price = price_el.get_text(strip=True) if price_el else "Ціна не вказана"
+
+                found.append({
+                    "id": f"olx_{ad_id}",
+                    "title": title,
+                    "price": price,
+                    "url": clean_url,
+                    "source": f"{label} (Власник)"
+                })
         except Exception as e:
             log(f"❌ Помилка OLX ({label}): {e}")
     return found
@@ -74,13 +94,30 @@ def scan_dimria():
                 continue
 
             soup = BeautifulSoup(res.text, "html.parser")
+            # Шукаємо посилання на об'єкти
             for a in soup.find_all("a", href=True):
                 href = a["href"]
                 if "/realty-" in href or "/uk/realty-" in href:
                     clean_url = href if href.startswith("http") else f"https://dom.ria.com{href}"
                     ad_id = clean_url.split("-")[-1].replace(".html", "")
                     title = a.get_text(strip=True) or label
-                    found.append({"id": f"dimria_{ad_id}", "title": title, "url": clean_url, "source": "DIM.RIA (Власник)"})
+                    
+                    # Шукаємо ціну поруч у картці
+                    card = a.find_parent("section") or a.find_parent("div")
+                    price = "Ціна в оголошенні"
+                    if card:
+                        price_el = card.find("b", class_="size22") or card.find("span", class_="price")
+                        if price_el:
+                            price = price_el.get_text(strip=True)
+
+                    if len(title) > 3:
+                        found.append({
+                            "id": f"dimria_{ad_id}",
+                            "title": title,
+                            "price": price,
+                            "url": clean_url,
+                            "source": f"{label} (Власник)"
+                        })
         except Exception as e:
             log(f"❌ Помилка DIM.RIA ({label}): {e}")
     return found
@@ -91,17 +128,15 @@ def run_hunter(force_test=False):
     all_items = scan_olx() + scan_dimria()
     log(f"📊 Всього проскановано об'єктів: {len(all_items)}")
 
-    # Якщо це перший запуск (прогрів) — тихо записуємо все в базу без спаму
     if not IS_WARMED_UP:
         for item in all_items:
             SEEN_ADS.add(item["id"])
         IS_WARMED_UP = True
-        log(f"🔥 Прогрів завершено! Запам'ятали {len(SEEN_ADS)} оголошень. Чекаємо тільки на СВІЖІ.")
+        log(f"🔥 Прогрів завершено! Запам'ятали {len(SEEN_ADS)} оголошень з цінами.")
         if force_test:
-            send_telegram(f"✅ <b>[ТЕСТ УСПІШНИЙ]</b>\nОбхід пробіг успішно! В базі {len(all_items)} існуючих оголошень. Відтепер присилаю ТІЛЬКИ свіжі!")
+            send_telegram(f"✅ <b>[ТЕСТ УСПІШНИЙ]</b>\nБот тепер витягує <b>ЦІНУ</b> та <b>ОПИС</b>!\nВсього знайдено: {len(all_items)} об'єктів.")
         return
 
-    # Робочий режим для свіжих оголошень
     new_count = 0
     for item in all_items:
         ad_id = item["id"]
@@ -114,6 +149,7 @@ def run_hunter(force_test=False):
         msg = (
             f"🎯 <b>{item['source']}</b>\n"
             f"📌 <b>{item['title']}</b>\n"
+            f"💵 <b>Ціна: {item['price']}</b>\n"
             f"🔗 <a href='{item['url']}'>Відкрити оголошення</a>"
         )
         send_telegram(msg)
@@ -126,7 +162,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот під контролем, кулемет вимкнено.".encode("utf-8"))
+        self.wfile.write("Бот навчився читати ціни!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
