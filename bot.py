@@ -8,25 +8,18 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 PORT = int(os.environ.get("PORT", 8080))
 
-# 1. OLX (Суто приватні особи)
-OLX_URLS = [
-    ("OLX Оренда Квартир", "https://www.olx.ua/uk/nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private"),
-    ("OLX Продаж Квартир", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private"),
-    ("OLX Оренда Будинків", "https://www.olx.ua/uk/nedvizhimost/doma/arenda-domov/khmelnitskiy/?search%5Bprivate_business%5D=private"),
-    ("OLX Продаж Будинків", "https://www.olx.ua/uk/nedvizhimost/doma/prodazha-domov/khmelnitskiy/?search%5Bprivate_business%5D=private")
-]
-
-# 2. DIM.RIA (Суто від власників / без ріелторів)
-DIMRIA_URLS = [
-    ("DIM.RIA Оренда Квартир", "https://dom.ria.com/uk/orenda-kvartyr/khmelnitskiy/?without_realtor=1"),
-    ("DIM.RIA Продаж Квартир", "https://dom.ria.com/uk/prodazh-kvartyr/khmelnitskiy/?without_realtor=1"),
-    ("DIM.RIA Оренда Будинків", "https://dom.ria.com/uk/orenda-budynkiv/khmelnitskiy/?without_realtor=1"),
-    ("DIM.RIA Продаж Будинків", "https://dom.ria.com/uk/prodazh-budynkiv/khmelnitskiy/?without_realtor=1")
+# OLX & DIM.RIA (Власники)
+SOURCES = [
+    ("OLX Оренда Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private", "olx"),
+    ("OLX Продаж Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private", "olx"),
+    ("DIM.RIA Оренда", "https://dom.ria.com/uk/orenda-kvartyr/khmelnitskiy/?without_realtor=1", "dimria"),
+    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazh-kvartyr/khmelnitskiy/?without_realtor=1", "dimria")
 ]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    "Accept-Language": "uk-UA,uk;q=0.9"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7"
 }
 
 SEEN_ADS = set()
@@ -42,64 +35,63 @@ def send_telegram(text):
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
     try:
         res = requests.post(url, json=payload, timeout=10)
+        log(f"📬 Telegram API: code={res.status_code}")
         return res.status_code == 200
     except Exception as e:
         log(f"❌ Помилка Telegram: {e}")
         return False
 
-def scan_olx(force_test=False):
+def scan_site(label, url, site_type):
     found = []
-    for label, url in OLX_URLS:
-        try:
-            res = requests.get(url, headers=HEADERS, timeout=12)
-            if res.status_code != 200:
-                continue
-            soup = BeautifulSoup(res.text, "html.parser")
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=12)
+        log(f"🌐 [{label}] Відповідь сайту: HTTP {res.status_code}")
+        if res.status_code != 200:
+            return found
+
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        if site_type == "olx":
+            # Пошук усіх карт оголошень на OLX
             cards = soup.find_all("div", data_testid="l-card") or soup.find_all("a", href=True)
             for card in cards:
                 a_tag = card if card.name == "a" else card.find("a", href=True)
                 if not a_tag:
                     continue
-                href = a_tag["href"]
-                if "/d/uk/obyavlenie/" in href or "/d/obyavlenie/" in href:
+                href = a_tag.get("href", "")
+                if "/d/uk/obyavlenie/" in href or "/d/obyavlenie/" in href or "olx.ua/d/" in href:
                     clean_url = href if href.startswith("http") else f"https://www.olx.ua{href}"
                     ad_id = clean_url.split(".html")[0].split("-")[-1]
                     title_elem = card.find("h6") or card.find("h4")
                     title = title_elem.get_text(strip=True) if title_elem else label
-                    price_elem = card.find("p", data_testid="ad-price")
-                    price = price_elem.get_text(strip=True) if price_elem else "Дивись на OLX"
-                    found.append({"id": f"olx_{ad_id}", "title": title, "price": price, "url": clean_url, "source": "OLX"})
-        except Exception as e:
-            log(f"Помилка OLX ({label}): {e}")
-    return found
+                    found.append({"id": f"olx_{ad_id}", "title": title, "url": clean_url, "source": "OLX"})
 
-def scan_dimria(force_test=False):
-    found = []
-    for label, url in DIMRIA_URLS:
-        try:
-            res = requests.get(url, headers=HEADERS, timeout=12)
-            if res.status_code != 200:
-                continue
-            soup = BeautifulSoup(res.text, "html.parser")
-            links = soup.find_all("a", href=True)
-            for a in links:
+        elif site_type == "dimria":
+            for a in soup.find_all("a", href=True):
                 href = a["href"]
-                if "/uk/realty-" in href or "/realty-" in href:
+                if "/realty-" in href:
                     clean_url = href if href.startswith("http") else f"https://dom.ria.com{href}"
                     ad_id = clean_url.split("-")[-1].replace(".html", "")
                     title = a.get_text(strip=True) or label
-                    found.append({"id": f"dimria_{ad_id}", "title": title, "price": "Власник (DIM.RIA)", "url": clean_url, "source": "DIM.RIA"})
-        except Exception as e:
-            log(f"Помилка DIM.RIA ({label}): {e}")
+                    found.append({"id": f"dimria_{ad_id}", "title": title, "url": clean_url, "source": "DIM.RIA"})
+
+    except Exception as e:
+        log(f"❌ Помилка під час сканування [{label}]: {e}")
+
+    log(f"🔍 [{label}] Знайдено сирих посилань: {len(found)}")
     return found
 
 def run_hunter(force_test=False):
     if force_test:
-        send_telegram("🚀 <b>[ТЕСТ ДВОСТВОЛКИ]</b> Бот заряджений на OLX + DIM.RIA (тільки ВЛАСНИКИ)!")
+        log("🧪 Тестовий виклик...")
+        send_telegram("🚀 <b>[ТЕСТ ДВОСТВОЛКИ]</b> Бот працює! Скануємо OLX + DIM.RIA...")
 
-    log("🔎 Запуск сканування OLX + DIM.RIA...")
-    all_items = scan_olx(force_test) + scan_dimria(force_test)
-    log(f"📊 Всього знайдено оголошень від власників: {len(all_items)}")
+    log("🔎 Запуск перевірки сайтів...")
+    all_items = []
+    for label, url, site_type in SOURCES:
+        all_items.extend(scan_site(label, url, site_type))
+
+    log(f"📊 Всього унікальних об'єктів: {len(all_items)}")
 
     new_count = 0
     for item in all_items:
@@ -113,7 +105,6 @@ def run_hunter(force_test=False):
         msg = (
             f"🎯 <b>ВЛАСНИК [{item['source']}]</b>\n"
             f"📌 <b>{item['title']}</b>\n"
-            f"💵 {item['price']}\n"
             f"🔗 <a href='{item['url']}'>Відкрити оголошення</a>"
         )
 
@@ -130,7 +121,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Двостволка OLX + DIM.RIA працює!".encode("utf-8"))
+        self.wfile.write("Сканер OLX + DIM.RIA запущено!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
