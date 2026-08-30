@@ -9,7 +9,6 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 PORT = int(os.environ.get("PORT", 8080))
 
-# Спеціальний скрапер для обходу Cloudflare (403)
 scraper = cloudscraper.create_scraper(
     browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
 )
@@ -19,13 +18,13 @@ OLX_SOURCES = [
     ("OLX Продаж Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private")
 ]
 
-# Точні робочі посилання для DIM.RIA
 DIMRIA_SOURCES = [
     ("DIM.RIA Оренда", "https://dom.ria.com/uk/orenda-kvartyr/khmelnytskyi/?without_realtor=1"),
     ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazh-kvartyr/khmelnytskyi/?without_realtor=1")
 ]
 
 SEEN_ADS = set()
+IS_WARMED_UP = False
 
 def log(msg):
     print(msg, flush=True)
@@ -87,13 +86,22 @@ def scan_dimria():
     return found
 
 def run_hunter(force_test=False):
-    if force_test:
-        send_telegram("🚀 <b>[ТЕСТ]</b> Скануємо OLX + DIM.RIA з маскуванням під браузер...")
-
+    global IS_WARMED_UP
     log("🔎 Початок сканування...")
     all_items = scan_olx() + scan_dimria()
-    log(f"📊 Всього витягнуто об'єктів: {len(all_items)}")
+    log(f"📊 Всього проскановано об'єктів: {len(all_items)}")
 
+    # Якщо це перший запуск (прогрів) — тихо записуємо все в базу без спаму
+    if not IS_WARMED_UP:
+        for item in all_items:
+            SEEN_ADS.add(item["id"])
+        IS_WARMED_UP = True
+        log(f"🔥 Прогрів завершено! Запам'ятали {len(SEEN_ADS)} оголошень. Чекаємо тільки на СВІЖІ.")
+        if force_test:
+            send_telegram(f"✅ <b>[ТЕСТ УСПІШНИЙ]</b>\nОбхід пробіг успішно! В базі {len(all_items)} існуючих оголошень. Відтепер присилаю ТІЛЬКИ свіжі!")
+        return
+
+    # Робочий режим для свіжих оголошень
     new_count = 0
     for item in all_items:
         ad_id = item["id"]
@@ -108,13 +116,9 @@ def run_hunter(force_test=False):
             f"📌 <b>{item['title']}</b>\n"
             f"🔗 <a href='{item['url']}'>Відкрити оголошення</a>"
         )
+        send_telegram(msg)
 
-        if force_test and new_count == 1:
-            send_telegram(msg)
-        elif not force_test:
-            send_telegram(msg)
-
-    log(f"🏁 Завершено. Нових надсилань: {new_count}")
+    log(f"🏁 Завершено. Надіслано НОВИХ: {new_count}")
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -122,7 +126,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот оновлено! Cloudscraper підключено.".encode("utf-8"))
+        self.wfile.write("Бот під контролем, кулемет вимкнено.".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
