@@ -1,5 +1,6 @@
 import os
 import requests
+import cloudscraper
 import threading
 from bs4 import BeautifulSoup
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -8,28 +9,21 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 PORT = int(os.environ.get("PORT", 8080))
 
-# OLX URL (Власники в Хмельницькому)
+# Спеціальний скрапер для обходу Cloudflare (403)
+scraper = cloudscraper.create_scraper(
+    browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+)
+
 OLX_SOURCES = [
     ("OLX Оренда Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private"),
-    ("OLX Продаж Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private"),
-    ("OLX Оренда Будинків", "https://www.olx.ua/uk/nedvizhimost/doma/arenda-domov/khmelnitskiy/?search%5Bprivate_business%5D=private"),
-    ("OLX Продаж Будинків", "https://www.olx.ua/uk/nedvizhimost/doma/prodazha-domov/khmelnitskiy/?search%5Bprivate_business%5D=private")
+    ("OLX Продаж Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private")
 ]
 
-# DIM.RIA URL (Тільки власники)
+# Точні робочі посилання для DIM.RIA
 DIMRIA_SOURCES = [
-    ("DIM.RIA Оренда Квар.", "https://dom.ria.com/uk/arenda-kvartir-khmelnitskiy/?without_realtor=1"),
-    ("DIM.RIA Продаж Квар.", "https://dom.ria.com/uk/prodazha-kvartir-khmelnitskiy/?without_realtor=1"),
-    ("DIM.RIA Оренда Буд.", "https://dom.ria.com/uk/arenda-domov-khmelnitskiy/?without_realtor=1"),
-    ("DIM.RIA Продаж Буд.", "https://dom.ria.com/uk/prodazha-domov-khmelnitskiy/?without_realtor=1")
+    ("DIM.RIA Оренда", "https://dom.ria.com/uk/orenda-kvartyr/khmelnytskyi/?without_realtor=1"),
+    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazh-kvartyr/khmelnytskyi/?without_realtor=1")
 ]
-
-# Маскування під iPhone Safari, щоб OLX не давав 403
-HEADERS_MOBILE = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3.1 Mobile/15E148 Safari/604.1",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "uk-UA,uk;q=0.9"
-}
 
 SEEN_ADS = set()
 
@@ -51,12 +45,9 @@ def send_telegram(text):
 
 def scan_olx():
     found = []
-    session = requests.Session()
-    session.headers.update(HEADERS_MOBILE)
-
     for label, url in OLX_SOURCES:
         try:
-            res = session.get(url, timeout=12)
+            res = scraper.get(url, timeout=15)
             log(f"🌐 [OLX] {label} -> HTTP {res.status_code}")
             if res.status_code != 200:
                 continue
@@ -76,12 +67,9 @@ def scan_olx():
 
 def scan_dimria():
     found = []
-    session = requests.Session()
-    session.headers.update(HEADERS_MOBILE)
-
     for label, url in DIMRIA_SOURCES:
         try:
-            res = session.get(url, timeout=12)
+            res = scraper.get(url, timeout=15)
             log(f"🌐 [DIM.RIA] {label} -> HTTP {res.status_code}")
             if res.status_code != 200:
                 continue
@@ -100,7 +88,7 @@ def scan_dimria():
 
 def run_hunter(force_test=False):
     if force_test:
-        send_telegram("🚀 <b>[ТЕСТ]</b> Скануємо OLX + DIM.RIA з новим обходом блокувань...")
+        send_telegram("🚀 <b>[ТЕСТ]</b> Скануємо OLX + DIM.RIA з маскуванням під браузер...")
 
     log("🔎 Початок сканування...")
     all_items = scan_olx() + scan_dimria()
@@ -134,7 +122,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот оновлено! Обхід блокувань задіяно.".encode("utf-8"))
+        self.wfile.write("Бот оновлено! Cloudscraper підключено.".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
