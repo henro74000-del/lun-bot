@@ -56,6 +56,24 @@ def send_telegram(text):
         log(f"❌ Помилка Telegram: {e}")
         return False
 
+def is_dimria_realtor_page(url):
+    """ Точкова перевірка сторінки оголошення на наявність рієлторів """
+    try:
+        res = scraper.get(url, timeout=10)
+        if res.status_code == 200:
+            text_lower = res.text.lower()
+            bad_phrases = [
+                "перевірений рієлтор", "перевірене агентство", 
+                "архітек", "architek", "основа", "osnova",
+                "комісія", "агентство нерухомості", "рієлтор"
+            ]
+            for bad in bad_phrases:
+                if bad in text_lower:
+                    return True
+    except Exception as e:
+        log(f"⚠️ Не вдалося перевірити сторінку {url}: {e}")
+    return False
+
 def scan_olx():
     found = []
     for label, url in OLX_SOURCES:
@@ -66,11 +84,9 @@ def scan_olx():
                 continue
 
             clean_text = res.text.replace('\\/', '/').replace('\\u002F', '/')
-
             raw_links = re.findall(r'/(?:uk/)?d/[^\s"\'\\<>#]+?\.html', clean_text)
-            unique_links = set(raw_links)
 
-            for href in unique_links:
+            for href in set(raw_links):
                 clean_url = f"https://www.olx.ua{href}"
                 ad_id = clean_url.split(".html")[0].split("-")[-1]
                 slug = clean_url.split("/")[-1].replace(".html", "").replace(f"-{ad_id}", "")
@@ -80,7 +96,7 @@ def scan_olx():
                     "id": f"olx_{ad_id}",
                     "title": title if len(title) > 3 else label,
                     "url": clean_url,
-                    "source": f"{label} (Власник)"
+                    "source": f"{label} (Приватна особа)"
                 })
         except Exception as e:
             log(f"❌ Помилка OLX ({label}): {e}")
@@ -88,11 +104,6 @@ def scan_olx():
 
 def scan_dimria():
     found = []
-    bad_keywords = [
-        "рієлтор", "риелтор", "ріелтор", "агентств", "агенство", 
-        "agency", "realtor", "основа", "osnova", "комісі", "маклер"
-    ]
-
     for label, url in DIMRIA_SOURCES:
         try:
             res = scraper.get(url, timeout=15)
@@ -101,30 +112,12 @@ def scan_dimria():
                 continue
 
             clean_text = res.text.replace('\\/', '/').replace('\\u002F', '/')
-
             raw_links = re.findall(r'/(?:uk/)?realty-[^\s"\'\\<>#]+?\.html', clean_text)
-            unique_links = set(raw_links)
 
-            for href in unique_links:
-                if not href.startswith("/uk/"):
-                    href_formatted = f"/uk{href}"
-                else:
-                    href_formatted = href
-
+            for href in set(raw_links):
+                href_formatted = href if href.startswith("/uk/") else f"/uk{href}"
                 clean_url = f"https://dom.ria.com{href_formatted}"
                 ad_id = clean_url.split("-")[-1].replace(".html", "")
-
-                # Скануємо абсолютно ВСІ входження посилання на сторінці
-                is_realtor = False
-                for m in re.finditer(re.escape(href), clean_text):
-                    pos = m.start()
-                    snippet = clean_text[max(0, pos-800):min(len(clean_text), pos+800)].lower()
-                    if any(bad in snippet for bad in bad_keywords):
-                        is_realtor = True
-                        break
-
-                if is_realtor:
-                    continue
 
                 found.append({
                     "id": f"dimria_{ad_id}",
@@ -149,7 +142,7 @@ def run_hunter(force_test=False):
             save_seen_ad(item["id"])
         log(f"🔥 Базу вперше створено! Записано {len(all_items)} шт.")
         if force_test:
-            send_telegram(f"✅ <b>[ТЕСТ]</b> Базу оновлено! Знайдено {len(all_items)} чистих об'єктів без агентств.")
+            send_telegram(f"✅ <b>[ТЕСТ]</b> Первинну базу сформовано ({len(all_items)} шт.)!")
         return
 
     new_count = 0
@@ -157,6 +150,14 @@ def run_hunter(force_test=False):
         ad_id = item["id"]
         if ad_id in seen_ads:
             continue
+
+        # ПОДВІЙНИЙ КОНТРОЛЬ ДЛЯ DIM.RIA: перевіряємо саму сторінку об'єкта
+        if ad_id.startswith("dimria_"):
+            if is_dimria_realtor_page(item["url"]):
+                log(f"🚫 [БАН] Знайдено замаскованого рієлтора: {item['url']}")
+                save_seen_ad(ad_id)
+                seen_ads.add(ad_id)
+                continue
 
         save_seen_ad(ad_id)
         seen_ads.add(ad_id)
@@ -170,7 +171,7 @@ def run_hunter(force_test=False):
         send_telegram(msg)
 
     if force_test and new_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Базу перевірено, рієлторів зачищено! Всі {len(all_items)} об'єктів дійсні.")
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Детектор працює! Усі нові об'єкти проскановано на наявність рієлторів.")
 
     log(f"🏁 Завершено. Нових надіслано: {new_count}")
 
@@ -180,7 +181,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Агентства зачищено!".encode("utf-8"))
+        self.wfile.write("Детектор рієлторів оновлено!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
