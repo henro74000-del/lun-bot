@@ -56,6 +56,46 @@ def send_telegram(text):
         log(f"❌ Помилка Telegram: {e}")
         return False
 
+def inspect_olx_page(url):
+    """ Отримує назву українською, долари (або грн), кімнати та площу з OLX """
+    try:
+        res = scraper.get(url, timeout=10)
+        if res.status_code == 200:
+            text = res.text
+            
+            # Заголовок
+            title_match = re.search(r'<h4[^>]*>(.*?)</h4>', text, re.DOTALL)
+            if not title_match:
+                title_match = re.search(r'<h1[^>]*>(.*?)</h1>', text, re.DOTALL)
+            
+            title = title_match.group(1).strip() if title_match else "Оголошення OLX"
+            title = re.sub(r'<[^>]+>', '', title).replace('- OLX.ua', '').strip()
+
+            # Спочатку шукаємо ціну в ДОЛАРАХ ($)
+            price_match = re.search(r'(\$[\s\d\xa0]+|[\d\s\xa0]+\s*\$)', text)
+            if not price_match:
+                # Якщо доларів немає — шукаємо в ГРИВНЯХ
+                price_match = re.search(r'([\d\s\xa0]{2,}(?:\.\d{2})?\s*(?:грн|\u20b4))', text)
+            
+            price = price_match.group(1).replace('\xa0', ' ').strip() if price_match else "Не вказано"
+
+            # Кімнати та площа
+            rooms_match = re.search(r'Кількість кімнат:\s*([^\n<]+)', text, re.IGNORECASE)
+            area_match = re.search(r'Загальна площа:\s*([^\n<]+)', text, re.IGNORECASE)
+            
+            rooms = rooms_match.group(1).strip() if rooms_match else ""
+            area = area_match.group(1).strip() if area_match else ""
+
+            details = []
+            if rooms: details.append(f"🚪 {rooms}")
+            if area: details.append(f"📐 {area}")
+            extra_info = " | ".join(details)
+
+            return title, price, extra_info
+    except Exception as e:
+        log(f"⚠️ Помилка витягування OLX сторінки {url}: {e}")
+    return "Оголошення OLX", "Не вказано", ""
+
 def inspect_dimria_page(url):
     """ Перевіряє рієлторів ТА шукає ціну на сторінці DIM.RIA """
     try:
@@ -70,11 +110,11 @@ def inspect_dimria_page(url):
             ]
             for bad in bad_phrases:
                 if bad in text_lower:
-                    return True, None
+                    return True, "Не вказано"
 
-            # Витягаємо ціну
-            price_match = re.search(r'([\d\s]{2,}\s*(?:\$|грн|\u20b4))', text)
-            price = price_match.group(1).strip() if price_match else "Не вказано"
+            # Шукаємо ціну ($ або грн)
+            price_match = re.search(r'(\$[\s\d\xa0]+|[\d\s\xa0]+\s*\$|[\d\s\xa0]{2,}\s*(?:грн|\u20b4))', text)
+            price = price_match.group(1).replace('\xa0', ' ').strip() if price_match else "Не вказано"
             return False, price
     except Exception as e:
         log(f"⚠️ Помилка перевірки сторінки {url}: {e}")
@@ -95,23 +135,10 @@ def scan_olx():
             for href in set(raw_links):
                 clean_url = f"https://www.olx.ua{href}"
                 ad_id = clean_url.split(".html")[0].split("-")[-1]
-                slug = clean_url.split("/")[-1].replace(".html", "").replace(f"-{ad_id}", "")
-                title = slug.replace("-", " ").capitalize()
-
-                # Шукаємо ціну поруч із посиланням в HTML
-                pos = clean_text.find(href)
-                price = "Не вказано"
-                if pos != -1:
-                    snippet = clean_text[max(0, pos-200):min(len(clean_text), pos+600)]
-                    p_match = re.search(r'(\d[\d\s]*\s*(?:грн|\$))', snippet, re.IGNORECASE)
-                    if p_match:
-                        price = p_match.group(1).strip()
 
                 found.append({
                     "id": f"olx_{ad_id}",
-                    "title": title if len(title) > 3 else label,
                     "url": clean_url,
-                    "price": price,
                     "source": f"{label} (Власник)"
                 })
         except Exception as e:
@@ -140,7 +167,8 @@ def scan_dimria():
                     "title": label,
                     "url": clean_url,
                     "price": "Не вказано",
-                    "source": label
+                    "source": label,
+                    "extra": ""
                 })
         except Exception as e:
             log(f"❌ Помилка DIM.RIA ({label}): {e}")
@@ -159,7 +187,7 @@ def run_hunter(force_test=False):
             save_seen_ad(item["id"])
         log(f"🔥 Базу вперше створено! Записано {len(all_items)} шт.")
         if force_test:
-            send_telegram(f"✅ <b>[ТЕСТ]</b> Базу оновлено! Знайдено {len(all_items)} чистих об'єктів з цінниками.")
+            send_telegram(f"✅ <b>[ТЕСТ]</b> Базу оновлено! Знайдено {len(all_items)} чистих об'єктів.")
         return
 
     new_count = 0
@@ -168,8 +196,15 @@ def run_hunter(force_test=False):
         if ad_id in seen_ads:
             continue
 
-        # Перевірка та збір ціни для DIM.RIA
-        if ad_id.startswith("dimria_"):
+        # Збір детальної інфи для OLX
+        if ad_id.startswith("olx_"):
+            title, price, extra_info = inspect_olx_page(item["url"])
+            item["title"] = title
+            item["price"] = price
+            item["extra"] = extra_info
+
+        # Перевірка та збір інфи для DIM.RIA
+        elif ad_id.startswith("dimria_"):
             is_realtor, price = inspect_dimria_page(item["url"])
             if is_realtor:
                 log(f"🚫 [БАН] Знайдено замаскованого рієлтора: {item['url']}")
@@ -182,16 +217,18 @@ def run_hunter(force_test=False):
         seen_ads.add(ad_id)
         new_count += 1
 
+        extra_line = f"\nℹ️ <b>Деталі:</b> {item['extra']}" if item.get('extra') else ""
         msg = (
             f"🎯 <b>{item['source']}</b>\n"
             f"📌 <b>{item['title']}</b>\n"
-            f"💰 <b>Ціна:</b> {item['price']}\n"
+            f"💰 <b>Ціна:</b> {item['price']}"
+            f"{extra_line}\n"
             f"🔗 <a href='{item['url']}'>Відкрити оголошення</a>"
         )
         send_telegram(msg)
 
     if force_test and new_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Детектор цін та рієлторів у порядку! Усі {len(all_items)} об'єктів перевірено.")
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v6.1 готовий! Долари та солов'їна мова активовані.")
 
     log(f"🏁 Завершено. Нових надіслано: {new_count}")
 
@@ -201,7 +238,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Ціни додано в сповіщення!".encode("utf-8"))
+        self.wfile.write("Бот v6.1 активовано!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
