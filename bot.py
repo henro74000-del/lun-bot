@@ -19,10 +19,9 @@ OLX_SOURCES = [
     ("OLX Продаж", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private")
 ]
 
-# ТОЧНИЙ URL з 'khmelnytskyi'
 DIMRIA_SOURCES = [
-    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/khmelnytskyi/?from_owner=1"),
-    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/khmelnytskyi/?from_owner=1")
+    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/khmelnytskyi/?from_owner=1&without_realtor=1"),
+    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/khmelnytskyi/?from_owner=1&without_realtor=1")
 ]
 
 def load_seen_ads():
@@ -89,6 +88,11 @@ def scan_olx():
 
 def scan_dimria():
     found = []
+    bad_keywords = [
+        "рієлтор", "риелтор", "ріелтор", "агентств", "агенство", 
+        "agency", "realtor", "основа", "osnova", "комісі", "маклер"
+    ]
+
     for label, url in DIMRIA_SOURCES:
         try:
             res = scraper.get(url, timeout=15)
@@ -102,14 +106,25 @@ def scan_dimria():
             unique_links = set(raw_links)
 
             for href in unique_links:
-                clean_url = f"https://dom.ria.com{href}"
+                if not href.startswith("/uk/"):
+                    href_formatted = f"/uk{href}"
+                else:
+                    href_formatted = href
+
+                clean_url = f"https://dom.ria.com{href_formatted}"
                 ad_id = clean_url.split("-")[-1].replace(".html", "")
 
-                pos = clean_text.find(href)
-                if pos != -1:
-                    snippet = clean_text[max(0, pos-200):min(len(clean_text), pos+200)].lower()
-                    if any(bad in snippet for bad in ["перевірене агентство", "перевірений рієлтор"]):
-                        continue
+                # Скануємо абсолютно ВСІ входження посилання на сторінці
+                is_realtor = False
+                for m in re.finditer(re.escape(href), clean_text):
+                    pos = m.start()
+                    snippet = clean_text[max(0, pos-800):min(len(clean_text), pos+800)].lower()
+                    if any(bad in snippet for bad in bad_keywords):
+                        is_realtor = True
+                        break
+
+                if is_realtor:
+                    continue
 
                 found.append({
                     "id": f"dimria_{ad_id}",
@@ -134,7 +149,7 @@ def run_hunter(force_test=False):
             save_seen_ad(item["id"])
         log(f"🔥 Базу вперше створено! Записано {len(all_items)} шт.")
         if force_test:
-            send_telegram(f"✅ <b>[ТЕСТ]</b> Знайдено {len(all_items)} об'єктів. Базу сформовано!")
+            send_telegram(f"✅ <b>[ТЕСТ]</b> Базу оновлено! Знайдено {len(all_items)} чистих об'єктів без агентств.")
         return
 
     new_count = 0
@@ -155,7 +170,7 @@ def run_hunter(force_test=False):
         send_telegram(msg)
 
     if force_test and new_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Знайдено {len(all_items)} об'єктів. Все працює!")
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Базу перевірено, рієлторів зачищено! Всі {len(all_items)} об'єктів дійсні.")
 
     log(f"🏁 Завершено. Нових надіслано: {new_count}")
 
@@ -165,7 +180,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот на варті!".encode("utf-8"))
+        self.wfile.write("Агентства зачищено!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
