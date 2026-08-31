@@ -48,7 +48,12 @@ def send_telegram(text):
         log("❌ ПОМИЛКА: BOT_TOKEN або CHAT_ID порожні!")
         return False
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": CHAT_ID, 
+        "text": text, 
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False  # Дозволяє Телеграму показувати прев'ю фото!
+    }
     try:
         res = requests.post(url, json=payload, timeout=10)
         return res.status_code == 200
@@ -56,38 +61,42 @@ def send_telegram(text):
         log(f"❌ Помилка Telegram: {e}")
         return False
 
+def extract_photo(text):
+    """ Шукає головне фото сторінки у мета-тезі og:image """
+    img_match = re.search(r'<meta\s+property="og:image"\s+content="([^"]+)"', text, re.IGNORECASE)
+    if not img_match:
+        img_match = re.search(r'<meta\s+name="og:image"\s+content="([^"]+)"', text, re.IGNORECASE)
+    return img_match.group(1) if img_match else None
+
 def inspect_olx_page(url):
-    """ Отримує точний заголовок, адекватну ціну, кімнати та площу з OLX """
+    """ Отримує заголовок, ціну, деталі ТА ФОТО з OLX """
     try:
         res = scraper.get(url, timeout=10)
         if res.status_code == 200:
             text = res.text
 
-            # 1. Заголовок через og:title (ігнорує кнопки типу "Повідомлення")
+            # 1. Заголовок
             title_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', text, re.IGNORECASE)
-            if title_match:
-                title = title_match.group(1).replace('- OLX.ua', '').replace('OLX.ua', '').strip()
-            else:
-                title = "Квартира OLX"
+            title = title_match.group(1).replace('- OLX.ua', '').replace('OLX.ua', '').strip() if title_match else "Квартира OLX"
 
-            # 2. Очищаємо HTML від скриптів та стилів, щоб прибрати технічні цифри
+            # 2. Фото
+            photo_url = extract_photo(text)
+
+            # 3. Очищення від скриптів для ціни
             clean_html = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL)
             clean_html = re.sub(r'<style[^>]*>.*?</style>', '', clean_html, flags=re.DOTALL)
 
-            # 3. Шукаємо адекватну ціну (ігноруємо сміття типу $05)
+            # 4. Ціна
             price = "Не вказано"
-            
-            # Шукаємо долари ($50 000 або 50 000 $) — мінімум 4 цифри
             usd_matches = re.findall(r'(\$\s*[\d\s\xa0]{4,}|[\d\s\xa0]{4,}\s*\$)', clean_html)
             if usd_matches:
                 price = usd_matches[0].replace('\xa0', ' ').strip()
             else:
-                # Шукаємо гривні — мінімум 5 цифр (від 100 000 грн)
                 uah_matches = re.findall(r'([\d\s\xa0]{5,}(?:\.\d{2})?\s*(?:грн|\u20b4))', clean_html)
                 if uah_matches:
                     price = uah_matches[0].replace('\xa0', ' ').strip()
 
-            # 4. Кімнати та площа
+            # 5. Кімнати та площа
             rooms_match = re.search(r'Кількість кімнат:\s*([^\n<]+)', text, re.IGNORECASE)
             area_match = re.search(r'Загальна площа:\s*([^\n<]+)', text, re.IGNORECASE)
 
@@ -99,13 +108,13 @@ def inspect_olx_page(url):
             if area: details.append(f"📐 {area}")
             extra_info = " | ".join(details)
 
-            return title, price, extra_info
+            return title, price, extra_info, photo_url
     except Exception as e:
-        log(f"⚠️ Помилка витягування OLX сторінки {url}: {e}")
-    return "Оголошення OLX", "Не вказано", ""
+        log(f"⚠️ Помилка OLX сторінки {url}: {e}")
+    return "Оголошення OLX", "Не вказано", "", None
 
 def inspect_dimria_page(url):
-    """ Перевіряє рієлторів ТА шукає ціну на сторінці DIM.RIA """
+    """ Перевіряє рієлторів, шукає ціну ТА ФОТО на DIM.RIA """
     try:
         res = scraper.get(url, timeout=10)
         if res.status_code == 200:
@@ -118,15 +127,18 @@ def inspect_dimria_page(url):
             ]
             for bad in bad_phrases:
                 if bad in text_lower:
-                    return True, "Не вказано"
+                    return True, "Не вказано", None
+
+            photo_url = extract_photo(text)
 
             clean_html = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL)
             price_match = re.search(r'(\$\s*[\d\s\xa0]{3,}|[\d\s\xa0]{3,}\s*\$|[\d\s\xa0]{4,}\s*(?:грн|\u20b4))', clean_html)
             price = price_match.group(1).replace('\xa0', ' ').strip() if price_match else "Не вказано"
-            return False, price
+            
+            return False, price, photo_url
     except Exception as e:
-        log(f"⚠️ Помилка перевірки сторінки {url}: {e}")
-    return False, "Не вказано"
+        log(f"⚠️ Помилка DIM.RIA {url}: {e}")
+    return False, "Не вказано", None
 
 def scan_olx():
     found = []
@@ -176,7 +188,8 @@ def scan_dimria():
                     "url": clean_url,
                     "price": "Не вказано",
                     "source": label,
-                    "extra": ""
+                    "extra": "",
+                    "photo": None
                 })
         except Exception as e:
             log(f"❌ Помилка DIM.RIA ({label}): {e}")
@@ -204,29 +217,35 @@ def run_hunter(force_test=False):
         if ad_id in seen_ads:
             continue
 
-        # Збір детальної інфи для OLX
+        # Збір детальної інфи та фото для OLX
         if ad_id.startswith("olx_"):
-            title, price, extra_info = inspect_olx_page(item["url"])
+            title, price, extra_info, photo_url = inspect_olx_page(item["url"])
             item["title"] = title
             item["price"] = price
             item["extra"] = extra_info
+            item["photo"] = photo_url
 
-        # Перевірка та збір інфи для DIM.RIA
+        # Збір детальної інфи та фото для DIM.RIA
         elif ad_id.startswith("dimria_"):
-            is_realtor, price = inspect_dimria_page(item["url"])
+            is_realtor, price, photo_url = inspect_dimria_page(item["url"])
             if is_realtor:
                 log(f"🚫 [БАН] Знайдено замаскованого рієлтора: {item['url']}")
                 save_seen_ad(ad_id)
                 seen_ads.add(ad_id)
                 continue
             item["price"] = price
+            item["photo"] = photo_url
 
         save_seen_ad(ad_id)
         seen_ads.add(ad_id)
         new_count += 1
 
+        # Формуємо приховане посилання для фото вгорі
+        photo_prefix = f'<a href="{item["photo"]}">&#8203;</a>' if item.get("photo") else ""
         extra_line = f"\nℹ️ <b>Деталі:</b> {item['extra']}" if item.get('extra') else ""
+
         msg = (
+            f"{photo_prefix}"
             f"🎯 <b>{item['source']}</b>\n"
             f"📌 <b>{item['title']}</b>\n"
             f"💰 <b>Ціна:</b> {item['price']}"
@@ -236,7 +255,7 @@ def run_hunter(force_test=False):
         send_telegram(msg)
 
     if force_test and new_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v6.2 готовий! Сміття очищено, заголовок та ціна ювелірні.")
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v6.3 готовий! Тепер із картинками та фото-прев'ю.")
 
     log(f"🏁 Завершено. Нових надіслано: {new_count}")
 
@@ -246,7 +265,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот v6.2 активовано!".encode("utf-8"))
+        self.wfile.write("Бот v6.3 з фото активовано!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
