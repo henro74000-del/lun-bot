@@ -19,10 +19,10 @@ OLX_SOURCES = [
     ("OLX Продаж Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private")
 ]
 
-# Виправлено транслітерацію міста на hmelnitskiy для DIM.RIA
+# Точні правильні посилання для DIM.RIA
 DIMRIA_SOURCES = [
-    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/hmelnitskiy/?without_realtor=1"),
-    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/hmelnitskiy/?without_realtor=1")
+    ("DIM.RIA Оренда", "https://dom.ria.com/uk/orenda-kvartyr/khmelnytskyi/?without_realtor=1"),
+    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazh-kvartyr/khmelnytskyi/?without_realtor=1")
 ]
 
 def load_seen_ads():
@@ -66,13 +66,13 @@ def scan_olx():
             if res.status_code != 200:
                 continue
 
-            # Витягуємо посилання регуляркою прямо з коду сторінки
-            raw_links = re.findall(r'href="([^"]*(?:/d/|obyavlen)[^"]*\.html)"', res.text)
+            # Універсальний пошук OLX посилань (у тому числі з JS/JSON)
+            raw_links = re.findall(r'(?:https?://www\.olx\.ua)?/d/(?:uk/)?[^\s"\'\\<>]+?\.html', res.text)
             unique_links = set(raw_links)
 
             for href in unique_links:
                 clean_url = href if href.startswith("http") else f"https://www.olx.ua{href}"
-                if "/d/" in clean_url or "obyavlenie" in clean_url:
+                if "/d/" in clean_url:
                     ad_id = clean_url.split(".html")[0].split("-")[-1]
                     slug = clean_url.split("/")[-1].replace(".html", "").replace(f"-{ad_id}", "")
                     title = slug.replace("-", " ").capitalize()
@@ -96,8 +96,8 @@ def scan_dimria():
             if res.status_code != 200:
                 continue
 
-            # Регулярка для посилань на об'єкти DIM.RIA
-            raw_links = re.findall(r'href="([^"]*/realty-[^"]*\.html)"', res.text)
+            # Універсальний пошук DIM.RIA посилань на нерухомість
+            raw_links = re.findall(r'(?:https?://dom\.ria\.com)?/(?:uk/)?realty-[^\s"\'\\<>]+?\.html', res.text)
             unique_links = set(raw_links)
 
             for href in unique_links:
@@ -158,7 +158,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот озброєний регулярними виразами!".encode("utf-8"))
+        self.wfile.write("Бот озброєний універсальним парсером!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
