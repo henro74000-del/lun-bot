@@ -57,32 +57,40 @@ def send_telegram(text):
         return False
 
 def inspect_olx_page(url):
-    """ Отримує назву українською, долари (або грн), кімнати та площу з OLX """
+    """ Отримує точний заголовок, адекватну ціну, кімнати та площу з OLX """
     try:
         res = scraper.get(url, timeout=10)
         if res.status_code == 200:
             text = res.text
-            
-            # Заголовок
-            title_match = re.search(r'<h4[^>]*>(.*?)</h4>', text, re.DOTALL)
-            if not title_match:
-                title_match = re.search(r'<h1[^>]*>(.*?)</h1>', text, re.DOTALL)
-            
-            title = title_match.group(1).strip() if title_match else "Оголошення OLX"
-            title = re.sub(r'<[^>]+>', '', title).replace('- OLX.ua', '').strip()
 
-            # Спочатку шукаємо ціну в ДОЛАРАХ ($)
-            price_match = re.search(r'(\$[\s\d\xa0]+|[\d\s\xa0]+\s*\$)', text)
-            if not price_match:
-                # Якщо доларів немає — шукаємо в ГРИВНЯХ
-                price_match = re.search(r'([\d\s\xa0]{2,}(?:\.\d{2})?\s*(?:грн|\u20b4))', text)
-            
-            price = price_match.group(1).replace('\xa0', ' ').strip() if price_match else "Не вказано"
+            # 1. Заголовок через og:title (ігнорує кнопки типу "Повідомлення")
+            title_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', text, re.IGNORECASE)
+            if title_match:
+                title = title_match.group(1).replace('- OLX.ua', '').replace('OLX.ua', '').strip()
+            else:
+                title = "Квартира OLX"
 
-            # Кімнати та площа
+            # 2. Очищаємо HTML від скриптів та стилів, щоб прибрати технічні цифри
+            clean_html = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL)
+            clean_html = re.sub(r'<style[^>]*>.*?</style>', '', clean_html, flags=re.DOTALL)
+
+            # 3. Шукаємо адекватну ціну (ігноруємо сміття типу $05)
+            price = "Не вказано"
+            
+            # Шукаємо долари ($50 000 або 50 000 $) — мінімум 4 цифри
+            usd_matches = re.findall(r'(\$\s*[\d\s\xa0]{4,}|[\d\s\xa0]{4,}\s*\$)', clean_html)
+            if usd_matches:
+                price = usd_matches[0].replace('\xa0', ' ').strip()
+            else:
+                # Шукаємо гривні — мінімум 5 цифр (від 100 000 грн)
+                uah_matches = re.findall(r'([\d\s\xa0]{5,}(?:\.\d{2})?\s*(?:грн|\u20b4))', clean_html)
+                if uah_matches:
+                    price = uah_matches[0].replace('\xa0', ' ').strip()
+
+            # 4. Кімнати та площа
             rooms_match = re.search(r'Кількість кімнат:\s*([^\n<]+)', text, re.IGNORECASE)
             area_match = re.search(r'Загальна площа:\s*([^\n<]+)', text, re.IGNORECASE)
-            
+
             rooms = rooms_match.group(1).strip() if rooms_match else ""
             area = area_match.group(1).strip() if area_match else ""
 
@@ -112,8 +120,8 @@ def inspect_dimria_page(url):
                 if bad in text_lower:
                     return True, "Не вказано"
 
-            # Шукаємо ціну ($ або грн)
-            price_match = re.search(r'(\$[\s\d\xa0]+|[\d\s\xa0]+\s*\$|[\d\s\xa0]{2,}\s*(?:грн|\u20b4))', text)
+            clean_html = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL)
+            price_match = re.search(r'(\$\s*[\d\s\xa0]{3,}|[\d\s\xa0]{3,}\s*\$|[\d\s\xa0]{4,}\s*(?:грн|\u20b4))', clean_html)
             price = price_match.group(1).replace('\xa0', ' ').strip() if price_match else "Не вказано"
             return False, price
     except Exception as e:
@@ -228,7 +236,7 @@ def run_hunter(force_test=False):
         send_telegram(msg)
 
     if force_test and new_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v6.1 готовий! Долари та солов'їна мова активовані.")
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v6.2 готовий! Сміття очищено, заголовок та ціна ювелірні.")
 
     log(f"🏁 Завершено. Нових надіслано: {new_count}")
 
@@ -238,7 +246,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот v6.1 активовано!".encode("utf-8"))
+        self.wfile.write("Бот v6.2 активовано!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
