@@ -20,8 +20,8 @@ OLX_SOURCES = [
 ]
 
 DIMRIA_SOURCES = [
-    ("DIM.RIA Оренда", "https://dom.ria.com/uk/orenda-kvartyr/khmelnytskyi/?without_realtor=1"),
-    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazh-kvartyr/khmelnytskyi/?without_realtor=1")
+    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/khmelnitskiy/?without_realtor=1"),
+    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/khmelnitskiy/?without_realtor=1")
 ]
 
 def load_seen_ads():
@@ -66,14 +66,16 @@ def scan_olx():
                 continue
 
             soup = BeautifulSoup(res.text, "html.parser")
+            
+            # Шукаємо посилання на оголошення
             for a in soup.find_all("a", href=True):
                 href = a["href"]
-                if "/d/uk/obyavlenie/" in href or "/d/obyavlenie/" in href:
+                if ".html" in href and ("/d/" in href or "obyavlenie" in href or "obyavlenye" in href):
                     clean_url = href if href.startswith("http") else f"https://www.olx.ua{href}"
                     ad_id = clean_url.split(".html")[0].split("-")[-1]
                     title = a.get_text(strip=True)
                     
-                    if len(title) > 3 and not title.startswith("http"):
+                    if len(title) > 5 and not title.startswith("http") and "повідомлення" not in title.lower():
                         found.append({
                             "id": f"olx_{ad_id}",
                             "title": title,
@@ -120,13 +122,12 @@ def run_hunter(force_test=False):
     all_items = scan_olx() + scan_dimria()
     log(f"📊 Знайдено на сайтах зараз: {len(all_items)}")
 
-    # Якщо файл був повністю порожній — один раз заповнюємо його і не спамимо
     if first_run:
         for item in all_items:
             save_seen_ad(item["id"])
         log(f"🔥 Базу вперше створено! Записано {len(all_items)} шт.")
         if force_test:
-            send_telegram(f"✅ <b>[ТЕСТ]</b> Файл бази створено! Записано {len(all_items)} існуючих оголошень. Чекаємо свіжак!")
+            send_telegram(f"✅ <b>[ТЕСТ]</b> Знайдено {len(all_items)} оголошень! Базу заповнено. Тепер чекаємо нових!")
         return
 
     new_count = 0
@@ -135,7 +136,6 @@ def run_hunter(force_test=False):
         if ad_id in seen_ads:
             continue
 
-        # Зберігаємо у файл І в пам'ять
         save_seen_ad(ad_id)
         seen_ads.add(ad_id)
         new_count += 1
@@ -148,7 +148,7 @@ def run_hunter(force_test=False):
         send_telegram(msg)
 
     if force_test and new_count == 0:
-        send_telegram("ℹ️ <b>[ТЕСТ]</b> Бот працює, файл бази на місці! Нових оголошень прямо зараз немає.")
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Знайдено {len(all_items)} актуальних хат. Усі вже в базі, чекаємо нових!")
 
     log(f"🏁 Завершено. Нових надіслано: {new_count}")
 
@@ -158,7 +158,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот вилікував склероз!".encode("utf-8"))
+        self.wfile.write("Бот налаштований і готовий до бою!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
