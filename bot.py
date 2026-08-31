@@ -19,10 +19,10 @@ OLX_SOURCES = [
     ("OLX Продаж Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private")
 ]
 
-# Точні правильні посилання для DIM.RIA
+# Точні працюючі URL для DIM.RIA
 DIMRIA_SOURCES = [
-    ("DIM.RIA Оренда", "https://dom.ria.com/uk/orenda-kvartyr/khmelnytskyi/?without_realtor=1"),
-    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazh-kvartyr/khmelnytskyi/?without_realtor=1")
+    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/khmelnitskiy/?without_realtor=1"),
+    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/khmelnitskiy/?without_realtor=1")
 ]
 
 def load_seen_ads():
@@ -66,23 +66,25 @@ def scan_olx():
             if res.status_code != 200:
                 continue
 
-            # Універсальний пошук OLX посилань (у тому числі з JS/JSON)
-            raw_links = re.findall(r'(?:https?://www\.olx\.ua)?/d/(?:uk/)?[^\s"\'\\<>]+?\.html', res.text)
+            # РОЗГАНЯЄМО ЕКРАНОВАНІ СЛЕШІ З JSON
+            clean_text = res.text.replace('\\/', '/')
+
+            # Витягуємо посилання на оголошення
+            raw_links = re.findall(r'/(?:uk/)?d/[^\s"\'\\<>]+?\.html', clean_text)
             unique_links = set(raw_links)
 
             for href in unique_links:
-                clean_url = href if href.startswith("http") else f"https://www.olx.ua{href}"
-                if "/d/" in clean_url:
-                    ad_id = clean_url.split(".html")[0].split("-")[-1]
-                    slug = clean_url.split("/")[-1].replace(".html", "").replace(f"-{ad_id}", "")
-                    title = slug.replace("-", " ").capitalize()
+                clean_url = f"https://www.olx.ua{href}"
+                ad_id = clean_url.split(".html")[0].split("-")[-1]
+                slug = clean_url.split("/")[-1].replace(".html", "").replace(f"-{ad_id}", "")
+                title = slug.replace("-", " ").capitalize()
 
-                    found.append({
-                        "id": f"olx_{ad_id}",
-                        "title": title if len(title) > 3 else label,
-                        "url": clean_url,
-                        "source": f"{label} (Власник)"
-                    })
+                found.append({
+                    "id": f"olx_{ad_id}",
+                    "title": title if len(title) > 3 else label,
+                    "url": clean_url,
+                    "source": f"{label} (Власник)"
+                })
         except Exception as e:
             log(f"❌ Помилка OLX ({label}): {e}")
     return found
@@ -96,12 +98,14 @@ def scan_dimria():
             if res.status_code != 200:
                 continue
 
-            # Універсальний пошук DIM.RIA посилань на нерухомість
-            raw_links = re.findall(r'(?:https?://dom\.ria\.com)?/(?:uk/)?realty-[^\s"\'\\<>]+?\.html', res.text)
+            clean_text = res.text.replace('\\/', '/')
+
+            # Витягуємо посилання DIM.RIA
+            raw_links = re.findall(r'/(?:uk/)?realty-[^\s"\'\\<>]+?\.html', clean_text)
             unique_links = set(raw_links)
 
             for href in unique_links:
-                clean_url = href if href.startswith("http") else f"https://dom.ria.com{href}"
+                clean_url = f"https://dom.ria.com{href}"
                 ad_id = clean_url.split("-")[-1].replace(".html", "")
 
                 found.append({
@@ -127,7 +131,7 @@ def run_hunter(force_test=False):
             save_seen_ad(item["id"])
         log(f"🔥 Базу вперше створено! Записано {len(all_items)} шт.")
         if force_test:
-            send_telegram(f"✅ <b>[ТЕСТ]</b> Успіх! Знайдено {len(all_items)} об'єктів. Базу заповнено, чекаємо нових!")
+            send_telegram(f"✅ <b>[ТЕСТ]</b> Перемога! Знайдено {len(all_items)} об'єктів. Базу заповнено!")
         return
 
     new_count = 0
@@ -148,7 +152,7 @@ def run_hunter(force_test=False):
         send_telegram(msg)
 
     if force_test and new_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Системи в нормі! Знайдено {len(all_items)} актуальних хат. Чекаємо свіжака!")
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Все працює! Знайдено {len(all_items)} хат, усі в базі.")
 
     log(f"🏁 Завершено. Нових надіслано: {new_count}")
 
@@ -158,7 +162,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот озброєний універсальним парсером!".encode("utf-8"))
+        self.wfile.write("Парсер виправлено!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
