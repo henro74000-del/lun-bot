@@ -1,8 +1,8 @@
 import os
+import re
 import requests
 import cloudscraper
 import threading
-from bs4 import BeautifulSoup
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -19,9 +19,10 @@ OLX_SOURCES = [
     ("OLX Продаж Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private")
 ]
 
+# Виправлено транслітерацію міста на hmelnitskiy для DIM.RIA
 DIMRIA_SOURCES = [
-    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/khmelnitskiy/?without_realtor=1"),
-    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/khmelnitskiy/?without_realtor=1")
+    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/hmelnitskiy/?without_realtor=1"),
+    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/hmelnitskiy/?without_realtor=1")
 ]
 
 def load_seen_ads():
@@ -65,23 +66,23 @@ def scan_olx():
             if res.status_code != 200:
                 continue
 
-            soup = BeautifulSoup(res.text, "html.parser")
-            
-            # Шукаємо посилання на оголошення
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                if ".html" in href and ("/d/" in href or "obyavlenie" in href or "obyavlenye" in href):
-                    clean_url = href if href.startswith("http") else f"https://www.olx.ua{href}"
+            # Витягуємо посилання регуляркою прямо з коду сторінки
+            raw_links = re.findall(r'href="([^"]*(?:/d/|obyavlen)[^"]*\.html)"', res.text)
+            unique_links = set(raw_links)
+
+            for href in unique_links:
+                clean_url = href if href.startswith("http") else f"https://www.olx.ua{href}"
+                if "/d/" in clean_url or "obyavlenie" in clean_url:
                     ad_id = clean_url.split(".html")[0].split("-")[-1]
-                    title = a.get_text(strip=True)
-                    
-                    if len(title) > 5 and not title.startswith("http") and "повідомлення" not in title.lower():
-                        found.append({
-                            "id": f"olx_{ad_id}",
-                            "title": title,
-                            "url": clean_url,
-                            "source": f"{label} (Власник)"
-                        })
+                    slug = clean_url.split("/")[-1].replace(".html", "").replace(f"-{ad_id}", "")
+                    title = slug.replace("-", " ").capitalize()
+
+                    found.append({
+                        "id": f"olx_{ad_id}",
+                        "title": title if len(title) > 3 else label,
+                        "url": clean_url,
+                        "source": f"{label} (Власник)"
+                    })
         except Exception as e:
             log(f"❌ Помилка OLX ({label}): {e}")
     return found
@@ -95,21 +96,20 @@ def scan_dimria():
             if res.status_code != 200:
                 continue
 
-            soup = BeautifulSoup(res.text, "html.parser")
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                if "/realty-" in href or "/uk/realty-" in href:
-                    clean_url = href if href.startswith("http") else f"https://dom.ria.com{href}"
-                    ad_id = clean_url.split("-")[-1].replace(".html", "")
-                    title = a.get_text(strip=True) or label
-                    
-                    if len(title) > 3:
-                        found.append({
-                            "id": f"dimria_{ad_id}",
-                            "title": title,
-                            "url": clean_url,
-                            "source": f"{label} (Власник)"
-                        })
+            # Регулярка для посилань на об'єкти DIM.RIA
+            raw_links = re.findall(r'href="([^"]*/realty-[^"]*\.html)"', res.text)
+            unique_links = set(raw_links)
+
+            for href in unique_links:
+                clean_url = href if href.startswith("http") else f"https://dom.ria.com{href}"
+                ad_id = clean_url.split("-")[-1].replace(".html", "")
+
+                found.append({
+                    "id": f"dimria_{ad_id}",
+                    "title": label,
+                    "url": clean_url,
+                    "source": f"{label} (Власник)"
+                })
         except Exception as e:
             log(f"❌ Помилка DIM.RIA ({label}): {e}")
     return found
@@ -127,7 +127,7 @@ def run_hunter(force_test=False):
             save_seen_ad(item["id"])
         log(f"🔥 Базу вперше створено! Записано {len(all_items)} шт.")
         if force_test:
-            send_telegram(f"✅ <b>[ТЕСТ]</b> Знайдено {len(all_items)} оголошень! Базу заповнено. Тепер чекаємо нових!")
+            send_telegram(f"✅ <b>[ТЕСТ]</b> Успіх! Знайдено {len(all_items)} об'єктів. Базу заповнено, чекаємо нових!")
         return
 
     new_count = 0
@@ -148,7 +148,7 @@ def run_hunter(force_test=False):
         send_telegram(msg)
 
     if force_test and new_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Знайдено {len(all_items)} актуальних хат. Усі вже в базі, чекаємо нових!")
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Системи в нормі! Знайдено {len(all_items)} актуальних хат. Чекаємо свіжака!")
 
     log(f"🏁 Завершено. Нових надіслано: {new_count}")
 
@@ -158,7 +158,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот налаштований і готовий до бою!".encode("utf-8"))
+        self.wfile.write("Бот озброєний регулярними виразами!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
