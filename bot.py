@@ -10,7 +10,6 @@ CHAT_ID = os.environ.get("CHAT_ID")
 PORT = int(os.environ.get("PORT", 8080))
 DB_FILE = "seen_ads.txt"
 
-# Налаштовуємо скрапер з реальним User-Agent, щоб сайти не блокили
 scraper = cloudscraper.create_scraper(
     browser={
         'browser': 'chrome',
@@ -20,14 +19,13 @@ scraper = cloudscraper.create_scraper(
 )
 
 OLX_SOURCES = [
-    ("OLX Оренда Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private"),
-    ("OLX Продаж Квар.", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private")
+    ("OLX Оренда", "https://www.olx.ua/uk/nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private"),
+    ("OLX Продаж", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private")
 ]
 
-# ТОЧНІ адреси з твого скріншоту!
 DIMRIA_SOURCES = [
-    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/khmelnytskyi/?without_realtor=1"),
-    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/khmelnytskyi/?without_realtor=1")
+    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/khmelnitskiy/?from_owner=1&without_realtor=1"),
+    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/khmelnitskiy/?from_owner=1&without_realtor=1")
 ]
 
 def load_seen_ads():
@@ -71,10 +69,8 @@ def scan_olx():
             if res.status_code != 200:
                 continue
 
-            # Замінюємо екрановані слеші з JSON / JavaScript
             clean_text = res.text.replace('\\/', '/')
 
-            # Універсальний регулярний вираз для пошуку будь-яких посилань на оголошення OLX
             raw_links = re.findall(r'(?:https?://www\.olx\.ua)?/(?:[a-zA-Z0-9_-]+/)*d/(?:uk/)?[^\s"\'\\<>#]+?\.html', clean_text)
             unique_links = set(raw_links)
 
@@ -89,7 +85,7 @@ def scan_olx():
                         "id": f"olx_{ad_id}",
                         "title": title if len(title) > 3 else label,
                         "url": clean_url,
-                        "source": f"{label} (Власник)"
+                        "source": f"{label} (Приватна особа)"
                     })
         except Exception as e:
             log(f"❌ Помилка OLX ({label}): {e}")
@@ -106,19 +102,25 @@ def scan_dimria():
 
             clean_text = res.text.replace('\\/', '/')
 
-            # Всеїдний пошук посилань на об'єкти DIM.RIA (realty-XXXXX.html або схожі)
-            raw_links = re.findall(r'(?:https?://dom\.ria\.com)?/(?:uk/)?(?:realty-[^\s"\'\\<>#]+?|uk/arenda-kvartir/[^\s"\'\\<>#]+?)\.html', clean_text)
+            raw_links = re.findall(r'/(?:uk/)?realty-[^\s"\'\\<>#]+?\.html', clean_text)
             unique_links = set(raw_links)
 
             for href in unique_links:
-                clean_url = href if href.startswith("http") else f"https://dom.ria.com{href}"
+                clean_url = f"https://dom.ria.com{href}"
                 ad_id = clean_url.split("-")[-1].replace(".html", "")
+
+                # Фільтр: шукаємо згадки про рієлторів/агентства поруч із посиланням в коді
+                pos = clean_text.find(href)
+                if pos != -1:
+                    snippet = clean_text[max(0, pos-250):min(len(clean_text), pos+300)].lower()
+                    if any(bad in snippet for bad in ["рієлтор", "риелтор", "агентств", "agency", "realtor", "перевірене агентство"]):
+                        continue # Пропускаємо рієлторів!
 
                 found.append({
                     "id": f"dimria_{ad_id}",
                     "title": label,
                     "url": clean_url,
-                    "source": f"{label} (Власник)"
+                    "source": label
                 })
         except Exception as e:
             log(f"❌ Помилка DIM.RIA ({label}): {e}")
@@ -137,7 +139,7 @@ def run_hunter(force_test=False):
             save_seen_ad(item["id"])
         log(f"🔥 Базу вперше створено! Записано {len(all_items)} шт.")
         if force_test:
-            send_telegram(f"✅ <b>[ТЕСТ]</b> Знайдено {len(all_items)} об'єктів! Первинну базу сформовано!")
+            send_telegram(f"✅ <b>[ТЕСТ]</b> Базу оновлено! Знайдено {len(all_items)} об'єктів після очищення від рієлторів.")
         return
 
     new_count = 0
@@ -158,7 +160,7 @@ def run_hunter(force_test=False):
         send_telegram(msg)
 
     if force_test and new_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Системи працюють ідеально! Знайдено {len(all_items)} об'єктів.")
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Фільтр працює! Всі {len(all_items)} чистих об'єктів вже у базі.")
 
     log(f"🏁 Завершено. Нових надіслано: {new_count}")
 
@@ -168,7 +170,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот оновлено!".encode("utf-8"))
+        self.wfile.write("Рієлторів вигнано!".encode("utf-8"))
 
         t = threading.Thread(target=run_hunter, kwargs={"force_test": force_test})
         t.daemon = True
