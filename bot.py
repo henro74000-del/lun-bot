@@ -216,6 +216,7 @@ def search_in_db(user_text):
 
     q = user_text.lower()
     
+    # Визначаємо ціну
     max_price = None
     numbers = re.findall(r'\b\d+\b', q)
     for num in numbers:
@@ -226,37 +227,55 @@ def search_in_db(user_text):
         elif val >= 1000:
             max_price = val
 
+    # Визначаємо кімнати (підтримуємо і 'к', і 'k')
     rooms_req = None
-    if any(k in q for k in ["1к", "1-к", "1 кімн", "однокімн"]): rooms_req = 1
-    elif any(k in q for k in ["2к", "2-к", "2 кімн", "двокімн"]): rooms_req = 2
-    elif any(k in q for k in ["3к", "3-к", "3 кімн", "трикімн"]): rooms_req = 3
+    if any(k in q for k in ["1к", "1k", "1-к", "1-k", "1 кімн", "однокімн"]): rooms_req = 1
+    elif any(k in q for k in ["2к", "2k", "2-к", "2-k", "2 кімн", "двокімн"]): rooms_req = 2
+    elif any(k in q for k in ["3к", "3k", "3-к", "3-k", "3 кімн", "трикімн"]): rooms_req = 3
 
-    keywords = [w for w in re.findall(r'[a-zA-ua-яєіїґ0-9]+', q) if len(w) > 3 and not w.isdigit() and w not in ["знайди", "шукаю", "квартиру", "квартира", "хмельницькому"]]
+    # Ключові слова (ігноруємо службові фрази)
+    stop_words = ["знайди", "шукаю", "квартиру", "квартира", "хмельницькому", "1к", "2к", "3к", "1k", "2k", "3k"]
+    keywords = [w for w in re.findall(r'[a-ua-яєіїґ0-9]+', q) if len(w) >= 3 and not w.isdigit() and w not in stop_words]
 
     matched = []
     for ad_id, ad in db.items():
         if ad.get("banned"):
             continue
 
+        # Перевірка ціни
         if max_price and ad.get("price_usd", 0) > 0:
             if ad["price_usd"] > max_price:
                 continue
 
-        if rooms_req and ad.get("rooms_num"):
-            if ad["rooms_num"] != rooms_req:
-                continue
+        full_text = (ad.get("title", "") + " " + ad.get("page_text", "")).lower()
 
+        # Перевірка кімнат
+        if rooms_req:
+            r_num = ad.get("rooms_num")
+            if r_num:
+                if r_num != rooms_req:
+                    continue
+            else:
+                # Якщо кількість кімнат не була розпарсена — шукаємо в тексті
+                room_patterns = {
+                    1: ["1к", "1k", "1 кімн", "1-кімн", "однокімн"],
+                    2: ["2к", "2k", "2 кімн", "2-кімн", "двокімн"],
+                    3: ["3к", "3k", "3 кімн", "3-кімн", "трикімн"]
+                }
+                if not any(pat in full_text for pat in room_patterns[rooms_req]):
+                    continue
+
+        # Перевірка слів (район, вулиця тощо)
         if keywords:
-            full_text = (ad.get("title", "") + " " + ad.get("page_text", "")).lower()
             if not any(kw in full_text for kw in keywords):
                 continue
 
         matched.append(ad)
 
     if not matched:
-        return f"🤷‍♂️ На жаль, за запитом «<i>{user_text}</i>» нічого не знайшов. Спробуй простіше: <code>45000</code> або <code>1к</code>."
+        return f"🤷‍♂️ На жаль, за запитом «<i>{user_text}</i>» нічого не знайшов. База ще поповнюється новими об'єктами!"
 
-    # ПРІОРИТЕТ: Спочатку ВЛАСНИКИ (is_owner=True), потім Співпраця
+    # Сортування: спочатку ВЛАСНИКИ
     matched.sort(key=lambda x: 0 if x.get("is_owner", True) else 1)
 
     response = f"🔎 <b>[ПОШУК НА ЗАПИТ]</b> Результати за вашим проханням:\n<i>«{user_text}»</i>\n\n"
@@ -317,7 +336,6 @@ def run_hunter(force_test=False):
             type_badge = "👑 <b>ВЛАСНИК</b>" if item.get("is_owner", True) else "🤝 <b>СПІВПРАЦЯ / РІЄЛТОР</b>"
             extra_line = f"\nℹ️ <b>Деталі:</b> {item['extra']}" if item.get('extra') else ""
 
-            # ЯСКРАВИЙ ЗАГОЛОВОК ДЛЯ АВТО-РАДАРУ
             msg = (
                 f"{photo_prefix}"
                 f"🚨 <b>[АВТО-РАДАР] Нове оголошення!</b>\n\n"
@@ -332,21 +350,20 @@ def run_hunter(force_test=False):
     if first_run:
         log(f"🔥 Базу вперше створено! Записано {len(db)} шт.")
         if force_test:
-            send_telegram(f"✅ <b>[ТЕСТ]</b> Базу вперше створено! Збережено {len(db)} об'єктів.")
+            send_telegram(f"✅ <b>[ТЕСТ]</b> Базу створено! Збережено {len(db)} об'єктів.")
 
     elif force_test and new_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v7.1 активний! Авто-радар та зворотній зв'язок працюють.")
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v7.2 активний! Сканер та пошук працюють.")
 
     log(f"🏁 Завершено. Нових надіслано: {new_count}")
 
 def background_loop():
-    """ Автоматичне сканування кожні 5 хвилин """
     while True:
         try:
             run_hunter()
         except Exception as e:
             log(f"⚠️ Помилка у циклі сканування: {e}")
-        time.sleep(300) # 5 хвилин
+        time.sleep(300)
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -354,7 +371,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот v7.1 активовано!".encode("utf-8"))
+        self.wfile.write("Бот v7.2 активовано!".encode("utf-8"))
 
         if force_test:
             t = threading.Thread(target=run_hunter, kwargs={"force_test": True})
@@ -373,7 +390,6 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
                 text = update["message"]["text"]
                 chat_id = update["message"]["chat"]["id"]
 
-                # Ігноруємо службові повідомлення
                 if text.startswith("🚨") or text.startswith("🔎") or text.startswith("✅") or text.startswith("ℹ️"):
                     return
 
@@ -388,10 +404,9 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     setup_webhook()
     
-    # Запускаємо постійний фоновий таймер сканування
     bg_thread = threading.Thread(target=background_loop, daemon=True)
     bg_thread.start()
 
-    log(f"🚀 Запуск сервера v7.1 на порту {PORT}...")
+    log(f"🚀 Запуск сервера v7.2 на порту {PORT}...")
     server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
     server.serve_forever()
