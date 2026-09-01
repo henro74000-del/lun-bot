@@ -17,13 +17,13 @@ scraper = cloudscraper.create_scraper(
 )
 
 OLX_SOURCES = [
-    ("OLX Оренда", "https://www.olx.ua/uk/nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private"),
-    ("OLX Продаж", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/?search%5Bprivate_business%5D=private")
+    ("OLX Оренда", "https://www.olx.ua/uk/nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir/khmelnitskiy/"),
+    ("OLX Продаж", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/")
 ]
 
 DIMRIA_SOURCES = [
-    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/khmelnytskyi/?from_owner=1&without_realtor=1"),
-    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/khmelnytskyi/?from_owner=1&without_realtor=1")
+    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/khmelnytskyi/"),
+    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/khmelnytskyi/")
 ]
 
 def load_ads_db():
@@ -91,6 +91,15 @@ def extract_photo(text):
         img_match = re.search(r'<meta\s+name="og:image"\s+content="([^"]+)"', text, re.IGNORECASE)
     return img_match.group(1) if img_match else None
 
+def check_if_realtor(text):
+    text_lower = text.lower()
+    # М'яка перевірка на рієлтора тільки по явних маркерах у тексті
+    realtor_words = ["агентство", "комісія", "ріелтор", "рієлтор", "послуги агента", "АН ", "ан «"]
+    for word in realtor_words:
+        if word in text_lower:
+            return True
+    return False
+
 def inspect_olx_page(url):
     try:
         res = scraper.get(url, timeout=10)
@@ -126,33 +135,34 @@ def inspect_olx_page(url):
 
             rooms_num = int(re.sub(r'[^\d]', '', rooms)) if re.search(r'\d+', rooms) else None
             price_usd = parse_price_usd(price)
+            is_realtor = check_if_realtor(text)
 
-            return title, price, price_usd, extra_info, rooms_num, photo_url, text
+            return title, price, price_usd, extra_info, rooms_num, photo_url, text, not is_realtor
     except Exception as e:
         log(f"⚠️ Помилка OLX сторінки {url}: {e}")
-    return "Оголошення OLX", "Не вказано", 0, "", None, None, ""
+    return "Оголошення OLX", "Не вказано", 0, "", None, None, "", True
 
 def inspect_dimria_page(url):
     try:
         res = scraper.get(url, timeout=10)
         if res.status_code == 200:
             text = res.text
-            text_lower = text.lower()
-            bad_phrases = ["перевірений рієлтор", "перевірене агентство", "архітек", "architek", "основа", "osnova", "комісія", "агентство нерухомості", "рієлтор"]
-            for bad in bad_phrases:
-                if bad in text_lower:
-                    return True, "Не вказано", 0, None, ""
-
             photo_url = extract_photo(text)
             clean_html = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL)
+            
+            title_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', text, re.IGNORECASE)
+            title = title_match.group(1).replace('- DOM.RIA', '').strip() if title_match else "Квартира DIM.RIA"
+
             price_match = re.search(r'(\$\s*[\d\s\xa0]{3,}|[\d\s\xa0]{3,}\s*\$|[\d\s\xa0]{4,}\s*(?:грн|\u20b4))', clean_html)
             price = price_match.group(1).replace('\xa0', ' ').strip() if price_match else "Не вказано"
             price_usd = parse_price_usd(price)
+            
+            is_realtor = check_if_realtor(text)
 
-            return False, price, price_usd, photo_url, text
+            return title, price, price_usd, photo_url, text, not is_realtor
     except Exception as e:
         log(f"⚠️ Помилка DIM.RIA {url}: {e}")
-    return False, "Не вказано", 0, None, ""
+    return "Оголошення DIM.RIA", "Не вказано", 0, None, "", True
 
 def scan_olx():
     found = []
@@ -172,8 +182,7 @@ def scan_olx():
                 found.append({
                     "id": f"olx_{ad_id}",
                     "url": clean_url,
-                    "source": label,
-                    "is_owner": True
+                    "source": label
                 })
         except Exception as e:
             log(f"❌ Помилка OLX ({label}): {e}")
@@ -197,13 +206,8 @@ def scan_dimria():
 
                 found.append({
                     "id": f"dimria_{ad_id}",
-                    "title": label,
                     "url": clean_url,
-                    "price": "Не вказано",
-                    "source": label,
-                    "is_owner": True,
-                    "extra": "",
-                    "photo": None
+                    "source": label
                 })
         except Exception as e:
             log(f"❌ Помилка DIM.RIA ({label}): {e}")
@@ -227,13 +231,13 @@ def search_in_db(user_text):
         elif val >= 1000:
             max_price = val
 
-    # Визначаємо кімнати (підтримуємо і 'к', і 'k')
+    # Визначаємо кімнати
     rooms_req = None
     if any(k in q for k in ["1к", "1k", "1-к", "1-k", "1 кімн", "однокімн"]): rooms_req = 1
     elif any(k in q for k in ["2к", "2k", "2-к", "2-k", "2 кімн", "двокімн"]): rooms_req = 2
     elif any(k in q for k in ["3к", "3k", "3-к", "3-k", "3 кімн", "трикімн"]): rooms_req = 3
 
-    # Ключові слова (ігноруємо службові фрази)
+    # Ключові слова
     stop_words = ["знайди", "шукаю", "квартиру", "квартира", "хмельницькому", "1к", "2к", "3к", "1k", "2k", "3k"]
     keywords = [w for w in re.findall(r'[a-ua-яєіїґ0-9]+', q) if len(w) >= 3 and not w.isdigit() and w not in stop_words]
 
@@ -247,7 +251,7 @@ def search_in_db(user_text):
             if ad["price_usd"] > max_price:
                 continue
 
-        full_text = (ad.get("title", "") + " " + ad.get("page_text", "")).lower()
+        full_text = (ad.get("title", "") + " " + ad.get("page_text", "") + " " + ad.get("url", "")).lower()
 
         # Перевірка кімнат
         if rooms_req:
@@ -256,7 +260,6 @@ def search_in_db(user_text):
                 if r_num != rooms_req:
                     continue
             else:
-                # Якщо кількість кімнат не була розпарсена — шукаємо в тексті
                 room_patterns = {
                     1: ["1к", "1k", "1 кімн", "1-кімн", "однокімн"],
                     2: ["2к", "2k", "2 кімн", "2-кімн", "двокімн"],
@@ -273,12 +276,12 @@ def search_in_db(user_text):
         matched.append(ad)
 
     if not matched:
-        return f"🤷‍♂️ На жаль, за запитом «<i>{user_text}</i>» нічого не знайшов. База ще поповнюється новими об'єктами!"
+        return f"🤷‍♂️ На жаль, за запитом «<i>{user_text}</i>» нічого не знайшов. База зараз інтенсивно поповнюється!"
 
-    # Сортування: спочатку ВЛАСНИКИ
+    # Сортування: Власники вище, рієлтори нижче
     matched.sort(key=lambda x: 0 if x.get("is_owner", True) else 1)
 
-    response = f"🔎 <b>[ПОШУК НА ЗАПИТ]</b> Результати за вашим проханням:\n<i>«{user_text}»</i>\n\n"
+    response = f"🔎 <b>[ПОШУК НА ЗАПИТ]</b> Результати:\n<i>«{user_text}»</i>\n\n"
     for item in matched[:5]:
         photo_prefix = f'<a href="{item["photo"]}">&#8203;</a>' if item.get("photo") else ""
         type_badge = "👑 <b>ВЛАСНИК</b>" if item.get("is_owner", True) else "🤝 <b>СПІВПРАЦЯ / РІЄЛТОР</b>"
@@ -287,8 +290,8 @@ def search_in_db(user_text):
         response += (
             f"{photo_prefix}"
             f"{type_badge} ({item['source']})\n"
-            f"📌 <b>{item['title']}</b>\n"
-            f"💰 <b>Ціна:</b> {item['price']}"
+            f"📌 <b>{item.get('title', 'Квартира')}</b>\n"
+            f"💰 <b>Ціна:</b> {item.get('price', 'Не вказано')}"
             f"{extra_line}\n"
             f"🔗 <a href='{item['url']}'>Відкрити оголошення</a>\n\n"
         )
@@ -308,23 +311,18 @@ def run_hunter(force_test=False):
             continue
 
         if ad_id.startswith("olx_"):
-            title, price, price_usd, extra_info, rooms_num, photo_url, text = inspect_olx_page(item["url"])
+            title, price, price_usd, extra_info, rooms_num, photo_url, text, is_owner = inspect_olx_page(item["url"])
             item.update({
                 "title": title, "price": price, "price_usd": price_usd, 
                 "extra": extra_info, "rooms_num": rooms_num, "photo": photo_url, 
-                "page_text": text[:1000], "is_owner": True
+                "page_text": text[:1000], "is_owner": is_owner
             })
 
         elif ad_id.startswith("dimria_"):
-            is_realtor, price, price_usd, photo_url, text = inspect_dimria_page(item["url"])
-            if is_realtor:
-                log(f"🚫 [БАН] Рієлтор: {item['url']}")
-                db[ad_id] = {"banned": True}
-                save_ads_db(db)
-                continue
+            title, price, price_usd, photo_url, text, is_owner = inspect_dimria_page(item["url"])
             item.update({
-                "price": price, "price_usd": price_usd, 
-                "photo": photo_url, "page_text": text[:1000], "is_owner": True
+                "title": title, "price": price, "price_usd": price_usd, 
+                "photo": photo_url, "page_text": text[:1000], "is_owner": is_owner, "extra": ""
             })
 
         db[ad_id] = item
@@ -340,8 +338,8 @@ def run_hunter(force_test=False):
                 f"{photo_prefix}"
                 f"🚨 <b>[АВТО-РАДАР] Нове оголошення!</b>\n\n"
                 f"{type_badge} ({item['source']})\n"
-                f"📌 <b>{item['title']}</b>\n"
-                f"💰 <b>Ціна:</b> {item['price']}"
+                f"📌 <b>{item.get('title', 'Квартира')}</b>\n"
+                f"💰 <b>Ціна:</b> {item.get('price', 'Не вказано')}"
                 f"{extra_line}\n"
                 f"🔗 <a href='{item['url']}'>Відкрити оголошення</a>"
             )
@@ -353,7 +351,7 @@ def run_hunter(force_test=False):
             send_telegram(f"✅ <b>[ТЕСТ]</b> Базу створено! Збережено {len(db)} об'єктів.")
 
     elif force_test and new_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v7.2 активний! Сканер та пошук працюють.")
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v7.3 активний! Всі хати тепер зберігаються в базу.")
 
     log(f"🏁 Завершено. Нових надіслано: {new_count}")
 
@@ -371,7 +369,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот v7.2 активовано!".encode("utf-8"))
+        self.wfile.write("Бот v7.3 активовано!".encode("utf-8"))
 
         if force_test:
             t = threading.Thread(target=run_hunter, kwargs={"force_test": True})
@@ -407,6 +405,6 @@ if __name__ == "__main__":
     bg_thread = threading.Thread(target=background_loop, daemon=True)
     bg_thread.start()
 
-    log(f"🚀 Запуск сервера v7.2 на порту {PORT}...")
+    log(f"🚀 Запуск сервера v7.3 на порту {PORT}...")
     server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
     server.serve_forever()
