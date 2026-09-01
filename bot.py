@@ -93,8 +93,7 @@ def extract_photo(text):
 
 def check_if_realtor(text):
     text_lower = text.lower()
-    # М'яка перевірка на рієлтора тільки по явних маркерах у тексті
-    realtor_words = ["агентство", "комісія", "ріелтор", "рієлтор", "послуги агента", "АН ", "ан «"]
+    realtor_words = ["агентство", "комісія", "ріелтор", "рієлтор", "послуги агента", "ан ", "агенція"]
     for word in realtor_words:
         if word in text_lower:
             return True
@@ -220,7 +219,6 @@ def search_in_db(user_text):
 
     q = user_text.lower()
     
-    # Визначаємо ціну
     max_price = None
     numbers = re.findall(r'\b\d+\b', q)
     for num in numbers:
@@ -231,13 +229,11 @@ def search_in_db(user_text):
         elif val >= 1000:
             max_price = val
 
-    # Визначаємо кімнати
     rooms_req = None
     if any(k in q for k in ["1к", "1k", "1-к", "1-k", "1 кімн", "однокімн"]): rooms_req = 1
     elif any(k in q for k in ["2к", "2k", "2-к", "2-k", "2 кімн", "двокімн"]): rooms_req = 2
     elif any(k in q for k in ["3к", "3k", "3-к", "3-k", "3 кімн", "трикімн"]): rooms_req = 3
 
-    # Ключові слова
     stop_words = ["знайди", "шукаю", "квартиру", "квартира", "хмельницькому", "1к", "2к", "3к", "1k", "2k", "3k"]
     keywords = [w for w in re.findall(r'[a-ua-яєіїґ0-9]+', q) if len(w) >= 3 and not w.isdigit() and w not in stop_words]
 
@@ -246,14 +242,12 @@ def search_in_db(user_text):
         if ad.get("banned"):
             continue
 
-        # Перевірка ціни
         if max_price and ad.get("price_usd", 0) > 0:
             if ad["price_usd"] > max_price:
                 continue
 
         full_text = (ad.get("title", "") + " " + ad.get("page_text", "") + " " + ad.get("url", "")).lower()
 
-        # Перевірка кімнат
         if rooms_req:
             r_num = ad.get("rooms_num")
             if r_num:
@@ -268,7 +262,6 @@ def search_in_db(user_text):
                 if not any(pat in full_text for pat in room_patterns[rooms_req]):
                     continue
 
-        # Перевірка слів (район, вулиця тощо)
         if keywords:
             if not any(kw in full_text for kw in keywords):
                 continue
@@ -276,9 +269,9 @@ def search_in_db(user_text):
         matched.append(ad)
 
     if not matched:
-        return f"🤷‍♂️ На жаль, за запитом «<i>{user_text}</i>» нічого не знайшов. База зараз інтенсивно поповнюється!"
+        return f"🤷‍♂️ На жаль, за запитом «<i>{user_text}</i>» нічого не знайшов."
 
-    # Сортування: Власники вище, рієлтори нижче
+    # Сортуємо: Спочатку Власники, потім Рієлтори
     matched.sort(key=lambda x: 0 if x.get("is_owner", True) else 1)
 
     response = f"🔎 <b>[ПОШУК НА ЗАПИТ]</b> Результати:\n<i>«{user_text}»</i>\n\n"
@@ -305,6 +298,8 @@ def run_hunter(force_test=False):
     all_items = scan_olx() + scan_dimria()
 
     new_count = 0
+    new_owners_count = 0
+
     for item in all_items:
         ad_id = item["id"]
         if ad_id in db:
@@ -329,9 +324,11 @@ def run_hunter(force_test=False):
         save_ads_db(db)
         new_count += 1
 
-        if not first_run:
+        # 🛑 КЛЮЧОВИЙ ФІКС: Відправляємо в чат ТІЛЬКИ ВЛАСНИКІВ!
+        if not first_run and item.get("is_owner", True):
+            new_owners_count += 1
             photo_prefix = f'<a href="{item["photo"]}">&#8203;</a>' if item.get("photo") else ""
-            type_badge = "👑 <b>ВЛАСНИК</b>" if item.get("is_owner", True) else "🤝 <b>СПІВПРАЦЯ / РІЄЛТОР</b>"
+            type_badge = "👑 <b>ВЛАСНИК</b>"
             extra_line = f"\nℹ️ <b>Деталі:</b> {item['extra']}" if item.get('extra') else ""
 
             msg = (
@@ -350,10 +347,10 @@ def run_hunter(force_test=False):
         if force_test:
             send_telegram(f"✅ <b>[ТЕСТ]</b> Базу створено! Збережено {len(db)} об'єктів.")
 
-    elif force_test and new_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v7.3 активний! Всі хати тепер зберігаються в базу.")
+    elif force_test and new_owners_count == 0:
+        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v7.4 активний! Авто-радар сповіщає ТІЛЬКИ про власників.")
 
-    log(f"🏁 Завершено. Нових надіслано: {new_count}")
+    log(f"🏁 Завершено. Нових хат: {new_count} (з них Власників надіслано: {new_owners_count})")
 
 def background_loop():
     while True:
@@ -369,7 +366,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот v7.3 активовано!".encode("utf-8"))
+        self.wfile.write("Бот v7.4 активовано!".encode("utf-8"))
 
         if force_test:
             t = threading.Thread(target=run_hunter, kwargs={"force_test": True})
@@ -405,6 +402,6 @@ if __name__ == "__main__":
     bg_thread = threading.Thread(target=background_loop, daemon=True)
     bg_thread.start()
 
-    log(f"🚀 Запуск сервера v7.3 на порту {PORT}...")
+    log(f"🚀 Запуск сервера v7.4 на порту {PORT}...")
     server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
     server.serve_forever()
