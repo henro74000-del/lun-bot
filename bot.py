@@ -121,25 +121,30 @@ def clean_html_to_text(html):
     clean = re.sub(r'\s+', ' ', clean).strip()
     return clean[:5000]
 
-def check_if_realtor(raw_html, clean_text):
-    text_lower = (clean_text + " " + raw_html).lower()
+def check_if_realtor(raw_html, clean_text, title=""):
+    text_lower = (title + " " + clean_text + " " + raw_html).lower()
     
-    # 1. Явна мітка від OLX/DIM.RIA про приватну особу має ТОП-пріоритет!
-    if 'приватна особа' in text_lower or '"usertype":"private"' in text_lower or 'user_type_private' in text_lower:
-        return False
-
-    # 2. Перевірка на бізнес-аккаунт
-    if '"usertype":"business"' in text_lower or 'user_type_business' in text_lower or '"isbusiness":true' in text_lower:
+    # 1. Детект кодів об'єктів агентств на початку заголовка (наприклад: "46204 !", "ID 12345")
+    if re.search(r'^\s*\d{4,6}\b', title) or re.search(r'\b(код|id)\s*[:#]?\s*\d{4,6}\b', text_lower):
         return True
 
-    # 3. Маркери рієлтора в описі (БЕЗ слова "нерухомості"!)
+    # 2. Список агентств та слів-маркерів
     realtor_words = [
         "агентство", "комісія", "ріелтор", "рієлтор", "послуги агента", 
-        "агенція", "маклер", "посередник", "представник агенції"
+        "агенція", "маклер", "посередник", "представник агенції",
+        "основа", "osnova", "оператор нерухомості"
     ]
     for word in realtor_words:
         if word in text_lower:
             return True
+
+    # 3. Перевірка на бізнес-аккаунт від OLX
+    if '"usertype":"business"' in text_lower or 'user_type_business' in text_lower or '"isbusiness":true' in text_lower:
+        return True
+
+    # 4. Тільки якщо НІЧОГО з перерахованого вище не знайшли — віримо плашці "Приватна особа"
+    if 'приватна особа' in text_lower or '"usertype":"private"' in text_lower or 'user_type_private' in text_lower:
+        return False
 
     return False
 
@@ -175,7 +180,7 @@ def inspect_olx_page(url):
 
             rooms_num = int(re.sub(r'[^\d]', '', rooms)) if re.search(r'\d+', rooms) else None
             price_usd = parse_price_usd(price)
-            is_realtor = check_if_realtor(raw_html, clean_text)
+            is_realtor = check_if_realtor(raw_html, clean_text, title=title)
 
             return title, price, price_usd, extra_info, rooms_num, photo_url, clean_text, not is_realtor
     except Exception as e:
@@ -197,7 +202,7 @@ def inspect_dimria_page(url):
             price = price_match.group(1).replace('\xa0', ' ').strip() if price_match else "Не вказано"
             price_usd = parse_price_usd(price)
             
-            is_realtor = check_if_realtor(raw_html, clean_text)
+            is_realtor = check_if_realtor(raw_html, clean_text, title=title)
 
             return title, price, price_usd, photo_url, clean_text, not is_realtor
     except Exception as e:
@@ -424,7 +429,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот v8.2 активовано!".encode("utf-8"))
+        self.wfile.write("Бот v8.3 активовано!".encode("utf-8"))
 
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
@@ -455,6 +460,6 @@ if __name__ == "__main__":
     bg_thread = threading.Thread(target=background_loop, daemon=True)
     bg_thread.start()
 
-    log(f"🚀 Запуск сервера v8.2 на порту {PORT}...")
+    log(f"🚀 Запуск сервера v8.3 на порту {PORT}...")
     server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
     server.serve_forever()
