@@ -128,11 +128,9 @@ def clean_html_to_text(html):
 def check_if_realtor(raw_html, clean_text, title=""):
     text_lower = (title + " " + clean_text + " " + raw_html).lower()
     
-    # 1. Детект кодів об'єктів агентств (наприклад: "46204 !", "ID 12345")
     if re.search(r'^\s*\d{4,6}\b', title) or re.search(r'\b(код|id)\s*[:#]?\s*\d{4,6}\b', text_lower):
         return True
 
-    # 2. Список агентств та маркерів
     realtor_words = [
         "агентство", "комісія", "ріелтор", "рієлтор", "послуги агента", 
         "агенція", "маклер", "посередник", "представник агенції",
@@ -142,11 +140,9 @@ def check_if_realtor(raw_html, clean_text, title=""):
         if word in text_lower:
             return True
 
-    # 3. Перевірка на бізнес-аккаунт від OLX
     if '"usertype":"business"' in text_lower or 'user_type_business' in text_lower or '"isbusiness":true' in text_lower:
         return True
 
-    # 4. Тільки якщо НІЧОГО з перерахованого вище не знайшли — віримо плашці "Приватна особа"
     if 'приватна особа' in text_lower or '"usertype":"private"' in text_lower or 'user_type_private' in text_lower:
         return False
 
@@ -265,7 +261,7 @@ def scan_dimria():
 def search_in_db(user_text):
     db = load_ads_db()
     if not db:
-        return "ℹ️ База поки порожня. Зачекайте першого повного сканування!"
+        return "ℹ️ База поки порожня. Зачекайте 3-5 хвилин сканування!"
 
     q = user_text.lower().strip()
     
@@ -292,7 +288,8 @@ def search_in_db(user_text):
         "знайди", "шукаю", "квартиру", "квартира", "хмельницькому", 
         "1к", "2к", "3к", "1k", "2k", "3k", "оренда", "продаж", 
         "свіжі", "нові", "день", "сьогодні", "власник", "без комісії", 
-        "приватна", "від власника", "будинок", "ділянка", "земля"
+        "приватна", "від власника", "будинок", "ділянка", "земля",
+        "до", "від", "біля", "на", "по", "в", "з"
     ]
     raw_words = re.findall(r'[a-ua-яєіїґ0-9]+', q)
     keywords = [w for w in raw_words if len(w) >= 2 and not w.isdigit() and w not in meta_words]
@@ -331,18 +328,19 @@ def search_in_db(user_text):
 
         if keywords:
             full_text = (ad.get("title", "") + " " + ad.get("page_text", "") + " " + ad.get("extra", "")).lower()
-            if not all(kw in full_text for kw in keywords):
+            # Шукаємо за коренем слова (перші 4 символи)
+            if not all(kw[:4] in full_text for kw in keywords):
                 continue
 
         matched.append(ad)
 
     if not matched:
         filter_type = " [ТІЛЬКИ ВЛАСНИКИ]" if only_owners else ""
-        return f"🤷‍♂️ За запитом «<i>{user_text}</i>»{filter_type} нічого не знайдено."
+        return f"🤷‍♂️ За запитом «<i>{user_text}</i>»{filter_type} нічого не знайдено (у базі {len(db)} об'єктів)."
 
     matched.sort(key=lambda x: 0 if x.get("is_owner", False) else 1)
 
-    response = f"🔎 <b>[ПОШУК НА ЗАПИТ]</b> Результати:\n<i>«{user_text}»</i>\n\n"
+    response = f"🔎 <b>[ПОШУК]</b> Знайдено {len(matched)} варіантів (База: {len(db)}):\n\n"
     for item in matched[:5]:
         type_badge = "👑 <b>ВЛАСНИК</b>" if item.get("is_owner", False) else "🤝 <b>СПІВПРАЦЯ / РІЄЛТОР</b>"
         extra_line = f"\nℹ️ <b>Деталі:</b> {item['extra']}" if item.get('extra') else ""
@@ -361,7 +359,7 @@ def run_hunter():
     initial_db_size = len(db)
     is_warmup = (initial_db_size < 20)
 
-    log(f"🔎 Сканування v8.4... В базі є {initial_db_size} об'єктів.")
+    log(f"🔎 Сканування v8.5... В базі є {initial_db_size} об'єктів.")
     all_items = scan_olx() + scan_dimria()
 
     new_items_this_run = []
@@ -433,7 +431,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот v8.4 активовано!".encode("utf-8"))
+        self.wfile.write("Бот v8.5 активовано!".encode("utf-8"))
 
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
@@ -464,6 +462,6 @@ if __name__ == "__main__":
     bg_thread = threading.Thread(target=background_loop, daemon=True)
     bg_thread.start()
 
-    log(f"🚀 Запуск сервера v8.4 на порту {PORT}...")
+    log(f"🚀 Запуск сервера v8.5 на порту {PORT}...")
     server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
     server.serve_forever()
