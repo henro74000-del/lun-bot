@@ -92,32 +92,50 @@ def extract_photo(text):
     return img_match.group(1) if img_match else None
 
 def clean_html_to_text(html):
-    # Очищаємо скрипти, стилі та HTML теги для якісного пошуку
     clean = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL)
     clean = re.sub(r'<style[^>]*>.*?</style>', ' ', clean, flags=re.DOTALL)
     clean = re.sub(r'<[^>]+>', ' ', clean)
     clean = re.sub(r'\s+', ' ', clean).strip()
     return clean[:5000]
 
-def check_if_realtor(text):
-    text_lower = text.lower()
-    realtor_words = ["агентство", "комісія", "ріелтор", "рієлтор", "послуги агента", "ан ", "агенція"]
+def check_if_realtor(raw_html, clean_text):
+    text_lower = (clean_text + " " + raw_html).lower()
+    
+    # 1. Перевірка прихованих системних прапорців OLX / DOM.RIA
+    if '"usertype":"business"' in text_lower or 'user_type_business' in text_lower or '"isbusiness":true' in text_lower:
+        return True
+    
+    if 'бізнес' in text_lower and 'приватна особа' not in text_lower:
+        if re.search(r'\bбізнес\b', text_lower):
+            return True
+
+    # 2. Ключові слова рієлторів
+    realtor_words = [
+        "агентство", "комісія", "ріелтор", "рієлтор", "послуги агента", 
+        "ан ", "агенція", "маклер", "нерухомості", "посередник",
+        "представник", "квадратний метр", "затишок", "агент "
+    ]
     for word in realtor_words:
         if word in text_lower:
             return True
-    return False
+            
+    # 3. Суворий перевірочний фільтр
+    if 'приватна особа' in text_lower or '"usertype":"private"' in text_lower:
+        return False
+
+    # За замовчуванням (якщо є хоч найменший сумнів) — вважаємо РІЄЛТОРОМ, щоб не спамити!
+    return True
 
 def inspect_olx_page(url):
     try:
         res = scraper.get(url, timeout=10)
         if res.status_code == 200:
-            text = res.text
-
-            title_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', text, re.IGNORECASE)
+            raw_html = res.text
+            title_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', raw_html, re.IGNORECASE)
             title = title_match.group(1).replace('- OLX.ua', '').replace('OLX.ua', '').strip() if title_match else "Квартира OLX"
-            photo_url = extract_photo(text)
+            photo_url = extract_photo(raw_html)
 
-            clean_text = clean_html_to_text(text)
+            clean_text = clean_html_to_text(raw_html)
 
             price = "Не вказано"
             usd_matches = re.findall(r'(\$\s*[\d\s\xa0]{4,}|[\d\s\xa0]{4,}\s*\$)', clean_text)
@@ -128,8 +146,8 @@ def inspect_olx_page(url):
                 if uah_matches:
                     price = uah_matches[0].replace('\xa0', ' ').strip()
 
-            rooms_match = re.search(r'Кількість кімнат:\s*([^\n<]+)', text, re.IGNORECASE)
-            area_match = re.search(r'Загальна площа:\s*([^\n<]+)', text, re.IGNORECASE)
+            rooms_match = re.search(r'Кількість кімнат:\s*([^\n<]+)', raw_html, re.IGNORECASE)
+            area_match = re.search(r'Загальна площа:\s*([^\n<]+)', raw_html, re.IGNORECASE)
 
             rooms = rooms_match.group(1).strip() if rooms_match else ""
             area = area_match.group(1).strip() if area_match else ""
@@ -141,34 +159,34 @@ def inspect_olx_page(url):
 
             rooms_num = int(re.sub(r'[^\d]', '', rooms)) if re.search(r'\d+', rooms) else None
             price_usd = parse_price_usd(price)
-            is_realtor = check_if_realtor(clean_text)
+            is_realtor = check_if_realtor(raw_html, clean_text)
 
             return title, price, price_usd, extra_info, rooms_num, photo_url, clean_text, not is_realtor
     except Exception as e:
         log(f"⚠️ Помилка OLX сторінки {url}: {e}")
-    return "Оголошення OLX", "Не вказано", 0, "", None, None, "", True
+    return "Оголошення OLX", "Не вказано", 0, "", None, None, "", False
 
 def inspect_dimria_page(url):
     try:
         res = scraper.get(url, timeout=10)
         if res.status_code == 200:
-            text = res.text
-            photo_url = extract_photo(text)
-            clean_text = clean_html_to_text(text)
+            raw_html = res.text
+            photo_url = extract_photo(raw_html)
+            clean_text = clean_html_to_text(raw_html)
             
-            title_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', text, re.IGNORECASE)
+            title_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', raw_html, re.IGNORECASE)
             title = title_match.group(1).replace('- DOM.RIA', '').strip() if title_match else "Квартира DIM.RIA"
 
             price_match = re.search(r'(\$\s*[\d\s\xa0]{3,}|[\d\s\xa0]{3,}\s*\$|[\d\s\xa0]{4,}\s*(?:грн|\u20b4))', clean_text)
             price = price_match.group(1).replace('\xa0', ' ').strip() if price_match else "Не вказано"
             price_usd = parse_price_usd(price)
             
-            is_realtor = check_if_realtor(clean_text)
+            is_realtor = check_if_realtor(raw_html, clean_text)
 
             return title, price, price_usd, photo_url, clean_text, not is_realtor
     except Exception as e:
         log(f"⚠️ Помилка DIM.RIA {url}: {e}")
-    return "Оголошення DIM.RIA", "Не вказано", 0, None, "", True
+    return "Оголошення DIM.RIA", "Не вказано", 0, None, "", False
 
 def scan_olx():
     found = []
@@ -226,7 +244,6 @@ def search_in_db(user_text):
 
     q = user_text.lower().strip()
     
-    # 1. Визначення максимальної ціни
     max_price = None
     numbers = re.findall(r'\b\d+\b', q)
     for num in numbers:
@@ -237,13 +254,11 @@ def search_in_db(user_text):
         elif val >= 1000:
             max_price = val
 
-    # 2. Визначення кількості кімнат
     rooms_req = None
     if re.search(r'\b(1|1к|1k|1-к|1-k|однокімн|1-кімн)\b', q): rooms_req = 1
     elif re.search(r'\b(2|2к|2k|2-к|2-k|двокімн|2-кімн)\b', q): rooms_req = 2
     elif re.search(r'\b(3|3к|3k|3-к|3-k|трикімн|3-кімн)\b', q): rooms_req = 3
 
-    # 3. Виділення ключових слів (наприклад "молодіж", "гречани")
     stop_words = ["знайди", "шукаю", "квартиру", "квартира", "хмельницькому", "1к", "2к", "3к", "1k", "2k", "3k"]
     raw_words = re.findall(r'[a-ua-яєіїґ0-9]+', q)
     keywords = [w for w in raw_words if len(w) >= 2 and not w.isdigit() and w not in stop_words]
@@ -259,7 +274,6 @@ def search_in_db(user_text):
 
         full_text = (ad.get("title", "") + " " + ad.get("page_text", "") + " " + ad.get("extra", "") + " " + ad.get("url", "")).lower()
 
-        # Фільтр кімнат
         if rooms_req:
             r_num = ad.get("rooms_num")
             if r_num:
@@ -274,7 +288,6 @@ def search_in_db(user_text):
                 if not any(re.search(pat, full_text) for pat in room_patterns[rooms_req]):
                     continue
 
-        # Фільтр ключових слів
         if keywords:
             if not any(kw in full_text for kw in keywords):
                 continue
@@ -284,13 +297,12 @@ def search_in_db(user_text):
     if not matched:
         return f"🤷‍♂️ На жаль, за запитом «<i>{user_text}</i>» нічого не знайшов."
 
-    # Сортуємо: Власники на початку
-    matched.sort(key=lambda x: 0 if x.get("is_owner", True) else 1)
+    matched.sort(key=lambda x: 0 if x.get("is_owner", False) else 1)
 
     response = f"🔎 <b>[ПОШУК НА ЗАПИТ]</b> Результати:\n<i>«{user_text}»</i>\n\n"
     for item in matched[:5]:
         photo_prefix = f'<a href="{item["photo"]}">&#8203;</a>' if item.get("photo") else ""
-        type_badge = "👑 <b>ВЛАСНИК</b>" if item.get("is_owner", True) else "🤝 <b>СПІВПРАЦЯ / РІЄЛТОР</b>"
+        type_badge = "👑 <b>ВЛАСНИК</b>" if item.get("is_owner", False) else "🤝 <b>СПІВПРАЦЯ / РІЄЛТОР</b>"
         extra_line = f"\nℹ️ <b>Деталі:</b> {item['extra']}" if item.get('extra') else ""
         
         response += (
@@ -303,15 +315,16 @@ def search_in_db(user_text):
         )
     return response
 
-def run_hunter(force_test=False):
+def run_hunter():
     db = load_ads_db()
-    first_run = (len(db) == 0)
+    initial_db_size = len(db)
+    
+    is_warmup = (initial_db_size < 20)
 
-    log(f"🔎 Сканування... В базі є {len(db)} об'єктів.")
+    log(f"🔎 Сканування... В базі є {initial_db_size} об'єктів.")
     all_items = scan_olx() + scan_dimria()
 
-    new_count = 0
-    new_owners_count = 0
+    new_items_this_run = []
 
     for item in all_items:
         ad_id = item["id"]
@@ -334,11 +347,24 @@ def run_hunter(force_test=False):
             })
 
         db[ad_id] = item
-        save_ads_db(db)
-        new_count += 1
+        new_items_this_run.append(item)
 
-        if not first_run and item.get("is_owner", True):
-            new_owners_count += 1
+    save_ads_db(db)
+
+    # Сповіщаємо ТІЛЬКИ про підтверджених справжніх ВЛАСНИКІВ
+    new_owners = [it for it in new_items_this_run if it.get("is_owner", False)]
+
+    log(f"🏁 Знайдено нових: {len(new_items_this_run)} (з них 100% Власників: {len(new_owners)})")
+
+    if is_warmup:
+        log("🛡 Розігрів бази: сповіщення вимкнено.")
+        return
+
+    # Якщо раптом насипало більше 3 хат одразу — не флудимо
+    if len(new_owners) > 3:
+        log(f"🛡 Запобіжник: масовий завантаж ({len(new_owners)} шт). Без PUSH у ТГ.")
+    else:
+        for item in new_owners:
             photo_prefix = f'<a href="{item["photo"]}">&#8203;</a>' if item.get("photo") else ""
             type_badge = "👑 <b>ВЛАСНИК</b>"
             extra_line = f"\nℹ️ <b>Деталі:</b> {item['extra']}" if item.get('extra') else ""
@@ -354,36 +380,20 @@ def run_hunter(force_test=False):
             )
             send_telegram(msg)
 
-    if first_run:
-        log(f"🔥 Базу вперше створено! Записано {len(db)} шт.")
-        if force_test:
-            send_telegram(f"✅ <b>[ТЕСТ]</b> Базу створено! Збережено {len(db)} об'єктів.")
-
-    elif force_test and new_owners_count == 0:
-        send_telegram(f"ℹ️ <b>[ТЕСТ]</b> Бот v7.5 активний! Пошук по текстах та кімнатах виправлено.")
-
-    log(f"🏁 Завершено. Нових хат: {new_count} (з них Власників надіслано: {new_owners_count})")
-
 def background_loop():
     while True:
         try:
             run_hunter()
         except Exception as e:
-            log(f"⚠️ Помилка у циклі сканування: {e}")
+            log(f"⚠️ Помилка сканування: {e}")
         time.sleep(300)
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        force_test = self.path.startswith("/test")
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот v7.5 активовано!".encode("utf-8"))
-
-        if force_test:
-            t = threading.Thread(target=run_hunter, kwargs={"force_test": True})
-            t.daemon = True
-            t.start()
+        self.wfile.write("Бот v8.0 активовано!".encode("utf-8"))
 
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
@@ -403,7 +413,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
                 reply = search_in_db(text)
                 send_telegram(reply, target_chat_id=chat_id)
         except Exception as e:
-            log(f"⚠️ Помилка обробки Webhook: {e}")
+            log(f"⚠️ Помилка Webhook: {e}")
 
     def log_message(self, format, *args):
         return
@@ -414,6 +424,6 @@ if __name__ == "__main__":
     bg_thread = threading.Thread(target=background_loop, daemon=True)
     bg_thread.start()
 
-    log(f"🚀 Запуск сервера v7.5 на порту {PORT}...")
+    log(f"🚀 Запуск сервера v8.0 на порту {PORT}...")
     server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
     server.serve_forever()
