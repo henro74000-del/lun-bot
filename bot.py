@@ -56,10 +56,9 @@ def setup_webhook():
     except Exception as e:
         log(f"⚠️ Не вдалося встановити Webhook: {e}")
 
-def send_telegram(text, target_chat_id=None):
+def send_telegram_msg(text, target_chat_id=None):
     cid = target_chat_id or CHAT_ID
     if not BOT_TOKEN or not cid:
-        log("❌ ПОМИЛКА: BOT_TOKEN або CHAT_ID порожні!")
         return False
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
@@ -74,6 +73,31 @@ def send_telegram(text, target_chat_id=None):
     except Exception as e:
         log(f"❌ Помилка Telegram: {e}")
         return False
+
+def send_telegram_photo(photo_url, caption, target_chat_id=None):
+    cid = target_chat_id or CHAT_ID
+    if not BOT_TOKEN or not cid:
+        return False
+    if not photo_url:
+        return send_telegram_msg(caption, target_chat_id=cid)
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    payload = {
+        "chat_id": cid,
+        "photo": photo_url,
+        "caption": caption,
+        "parse_mode": "HTML"
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=10)
+        if res.status_code == 200:
+            return True
+        else:
+            # Якщо фото заблоковано — надсилаємо текстом
+            return send_telegram_msg(caption, target_chat_id=cid)
+    except Exception as e:
+        log(f"⚠️ Помилка відправки фото: {e}")
+        return send_telegram_msg(caption, target_chat_id=cid)
 
 def parse_price_usd(price_str):
     if "$" in price_str:
@@ -101,7 +125,6 @@ def clean_html_to_text(html):
 def check_if_realtor(raw_html, clean_text):
     text_lower = (clean_text + " " + raw_html).lower()
     
-    # 1. Перевірка прихованих системних прапорців OLX / DOM.RIA
     if '"usertype":"business"' in text_lower or 'user_type_business' in text_lower or '"isbusiness":true' in text_lower:
         return True
     
@@ -109,21 +132,18 @@ def check_if_realtor(raw_html, clean_text):
         if re.search(r'\bбізнес\b', text_lower):
             return True
 
-    # 2. Ключові слова рієлторів
     realtor_words = [
         "агентство", "комісія", "ріелтор", "рієлтор", "послуги агента", 
         "ан ", "агенція", "маклер", "нерухомості", "посередник",
-        "представник", "квадратний метр", "затишок", "агент "
+        "представник", "квадратний метр", "затишок"
     ]
     for word in realtor_words:
         if word in text_lower:
             return True
             
-    # 3. Суворий перевірочний фільтр
     if 'приватна особа' in text_lower or '"usertype":"private"' in text_lower:
         return False
 
-    # За замовчуванням (якщо є хоч найменший сумнів) — вважаємо РІЄЛТОРОМ, щоб не спамити!
     return True
 
 def inspect_olx_page(url):
@@ -134,7 +154,6 @@ def inspect_olx_page(url):
             title_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', raw_html, re.IGNORECASE)
             title = title_match.group(1).replace('- OLX.ua', '').replace('OLX.ua', '').strip() if title_match else "Квартира OLX"
             photo_url = extract_photo(raw_html)
-
             clean_text = clean_html_to_text(raw_html)
 
             price = "Не вказано"
@@ -244,6 +263,11 @@ def search_in_db(user_text):
 
     q = user_text.lower().strip()
     
+    # Визначаємо спец-фільтри
+    only_owners = any(w in q for w in ["власник", "приватна", "без комісії", "від власника"])
+    only_rent = "оренд" in q
+    only_sale = "продаж" in q or "купівл" in q
+
     max_price = None
     numbers = re.findall(r'\b\d+\b', q)
     for num in numbers:
@@ -259,66 +283,82 @@ def search_in_db(user_text):
     elif re.search(r'\b(2|2к|2k|2-к|2-k|двокімн|2-кімн)\b', q): rooms_req = 2
     elif re.search(r'\b(3|3к|3k|3-к|3-k|трикімн|3-кімн)\b', q): rooms_req = 3
 
-    stop_words = ["знайди", "шукаю", "квартиру", "квартира", "хмельницькому", "1к", "2к", "3к", "1k", "2k", "3k"]
+    meta_words = [
+        "знайди", "шукаю", "квартиру", "квартира", "хмельницькому", 
+        "1к", "2к", "3к", "1k", "2k", "3k", "оренда", "продаж", 
+        "свіжі", "нові", "день", "сьогодні", "власник", "без комісії", 
+        "приватна", "від власника"
+    ]
     raw_words = re.findall(r'[a-ua-яєіїґ0-9]+', q)
-    keywords = [w for w in raw_words if len(w) >= 2 and not w.isdigit() and w not in stop_words]
+    keywords = [w for w in raw_words if len(w) >= 2 and not w.isdigit() and w not in meta_words]
 
     matched = []
     for ad_id, ad in db.items():
         if ad.get("banned"):
             continue
 
+        # Фільтр оренди/продажу
+        if only_rent and "Оренда" not in ad.get("source", ""):
+            continue
+        if only_sale and "Продаж" not in ad.get("source", ""):
+            continue
+
+        # Фільтр власників
+        if only_owners and not ad.get("is_owner", False):
+            continue
+
+        # Фільтр ціни
         if max_price and ad.get("price_usd", 0) > 0:
             if ad["price_usd"] > max_price:
                 continue
 
-        full_text = (ad.get("title", "") + " " + ad.get("page_text", "") + " " + ad.get("extra", "") + " " + ad.get("url", "")).lower()
-
+        # Фільтр кімнат
         if rooms_req:
             r_num = ad.get("rooms_num")
             if r_num:
                 if r_num != rooms_req:
                     continue
             else:
+                full_text_tmp = (ad.get("title", "") + " " + ad.get("page_text", "")).lower()
                 room_patterns = {
                     1: [r'\b1\s*[-–]?\s*к', r'1k', r'1 кімн', r'однокімн'],
                     2: [r'\b2\s*[-–]?\s*к', r'2k', r'2 кімн', r'двокімн'],
                     3: [r'\b3\s*[-–]?\s*к', r'3k', r'3 кімн', r'трикімн']
                 }
-                if not any(re.search(pat, full_text) for pat in room_patterns[rooms_req]):
+                if not any(re.search(pat, full_text_tmp) for pat in room_patterns[rooms_req]):
                     continue
 
+        # Ключові слова (мають бути ВСІ знайдені)
         if keywords:
-            if not any(kw in full_text for kw in keywords):
+            full_text = (ad.get("title", "") + " " + ad.get("page_text", "") + " " + ad.get("extra", "")).lower()
+            if not all(kw in full_text for kw in keywords):
                 continue
 
         matched.append(ad)
 
     if not matched:
-        return f"🤷‍♂️ На жаль, за запитом «<i>{user_text}</i>» нічого не знайшов."
+        filter_type = " [ТІЛЬКИ ВЛАСНИКИ]" if only_owners else ""
+        return f"🤷‍♂️ За запитом «<i>{user_text}</i>»{filter_type} нічого не знайдено."
 
     matched.sort(key=lambda x: 0 if x.get("is_owner", False) else 1)
 
     response = f"🔎 <b>[ПОШУК НА ЗАПИТ]</b> Результати:\n<i>«{user_text}»</i>\n\n"
     for item in matched[:5]:
-        photo_prefix = f'<a href="{item["photo"]}">&#8203;</a>' if item.get("photo") else ""
         type_badge = "👑 <b>ВЛАСНИК</b>" if item.get("is_owner", False) else "🤝 <b>СПІВПРАЦЯ / РІЄЛТОР</b>"
         extra_line = f"\nℹ️ <b>Деталі:</b> {item['extra']}" if item.get('extra') else ""
         
         response += (
-            f"{photo_prefix}"
             f"{type_badge} ({item['source']})\n"
             f"📌 <b>{item.get('title', 'Квартира')}</b>\n"
             f"💰 <b>Ціна:</b> {item.get('price', 'Не вказано')}"
             f"{extra_line}\n"
-            f"🔗 <a href='{item['url']}'>Відкрити оголошення</a>\n\n"
+            f"🔗 <a href='{item['url']}'>Відкрити оголошення на OLX/DIM.RIA</a>\n\n"
         )
     return response
 
 def run_hunter():
     db = load_ads_db()
     initial_db_size = len(db)
-    
     is_warmup = (initial_db_size < 20)
 
     log(f"🔎 Сканування... В базі є {initial_db_size} об'єктів.")
@@ -351,26 +391,22 @@ def run_hunter():
 
     save_ads_db(db)
 
-    # Сповіщаємо ТІЛЬКИ про підтверджених справжніх ВЛАСНИКІВ
     new_owners = [it for it in new_items_this_run if it.get("is_owner", False)]
 
-    log(f"🏁 Знайдено нових: {len(new_items_this_run)} (з них 100% Власників: {len(new_owners)})")
+    log(f"🏁 Знайдено нових: {len(new_items_this_run)} (з них Власників: {len(new_owners)})")
 
     if is_warmup:
         log("🛡 Розігрів бази: сповіщення вимкнено.")
         return
 
-    # Якщо раптом насипало більше 3 хат одразу — не флудимо
     if len(new_owners) > 3:
         log(f"🛡 Запобіжник: масовий завантаж ({len(new_owners)} шт). Без PUSH у ТГ.")
     else:
         for item in new_owners:
-            photo_prefix = f'<a href="{item["photo"]}">&#8203;</a>' if item.get("photo") else ""
             type_badge = "👑 <b>ВЛАСНИК</b>"
             extra_line = f"\nℹ️ <b>Деталі:</b> {item['extra']}" if item.get('extra') else ""
 
             msg = (
-                f"{photo_prefix}"
                 f"🚨 <b>[АВТО-РАДАР] Нове оголошення!</b>\n\n"
                 f"{type_badge} ({item['source']})\n"
                 f"📌 <b>{item.get('title', 'Квартира')}</b>\n"
@@ -378,7 +414,12 @@ def run_hunter():
                 f"{extra_line}\n"
                 f"🔗 <a href='{item['url']}'>Відкрити оголошення</a>"
             )
-            send_telegram(msg)
+            
+            # Відправляємо з ПОВНОЦІННИМ фото
+            if item.get("photo"):
+                send_telegram_photo(item["photo"], msg)
+            else:
+                send_telegram_msg(msg)
 
 def background_loop():
     while True:
@@ -393,7 +434,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот v8.0 активовано!".encode("utf-8"))
+        self.wfile.write("Бот v8.1 активовано!".encode("utf-8"))
 
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
@@ -411,7 +452,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
                     return
 
                 reply = search_in_db(text)
-                send_telegram(reply, target_chat_id=chat_id)
+                send_telegram_msg(reply, target_chat_id=chat_id)
         except Exception as e:
             log(f"⚠️ Помилка Webhook: {e}")
 
@@ -424,6 +465,6 @@ if __name__ == "__main__":
     bg_thread = threading.Thread(target=background_loop, daemon=True)
     bg_thread.start()
 
-    log(f"🚀 Запуск сервера v8.0 на порту {PORT}...")
+    log(f"🚀 Запуск сервера v8.1 на порту {PORT}...")
     server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
     server.serve_forever()
