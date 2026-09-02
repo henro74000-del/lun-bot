@@ -93,7 +93,6 @@ def send_telegram_photo(photo_url, caption, target_chat_id=None):
         if res.status_code == 200:
             return True
         else:
-            # Якщо фото заблоковано — надсилаємо текстом
             return send_telegram_msg(caption, target_chat_id=cid)
     except Exception as e:
         log(f"⚠️ Помилка відправки фото: {e}")
@@ -125,26 +124,24 @@ def clean_html_to_text(html):
 def check_if_realtor(raw_html, clean_text):
     text_lower = (clean_text + " " + raw_html).lower()
     
+    # 1. Явна мітка від OLX/DIM.RIA про приватну особу має ТОП-пріоритет!
+    if 'приватна особа' in text_lower or '"usertype":"private"' in text_lower or 'user_type_private' in text_lower:
+        return False
+
+    # 2. Перевірка на бізнес-аккаунт
     if '"usertype":"business"' in text_lower or 'user_type_business' in text_lower or '"isbusiness":true' in text_lower:
         return True
-    
-    if 'бізнес' in text_lower and 'приватна особа' not in text_lower:
-        if re.search(r'\bбізнес\b', text_lower):
-            return True
 
+    # 3. Маркери рієлтора в описі (БЕЗ слова "нерухомості"!)
     realtor_words = [
         "агентство", "комісія", "ріелтор", "рієлтор", "послуги агента", 
-        "ан ", "агенція", "маклер", "нерухомості", "посередник",
-        "представник", "квадратний метр", "затишок"
+        "агенція", "маклер", "посередник", "представник агенції"
     ]
     for word in realtor_words:
         if word in text_lower:
             return True
-            
-    if 'приватна особа' in text_lower or '"usertype":"private"' in text_lower:
-        return False
 
-    return True
+    return False
 
 def inspect_olx_page(url):
     try:
@@ -263,7 +260,6 @@ def search_in_db(user_text):
 
     q = user_text.lower().strip()
     
-    # Визначаємо спец-фільтри
     only_owners = any(w in q for w in ["власник", "приватна", "без комісії", "від власника"])
     only_rent = "оренд" in q
     only_sale = "продаж" in q or "купівл" in q
@@ -297,22 +293,18 @@ def search_in_db(user_text):
         if ad.get("banned"):
             continue
 
-        # Фільтр оренди/продажу
         if only_rent and "Оренда" not in ad.get("source", ""):
             continue
         if only_sale and "Продаж" not in ad.get("source", ""):
             continue
 
-        # Фільтр власників
         if only_owners and not ad.get("is_owner", False):
             continue
 
-        # Фільтр ціни
         if max_price and ad.get("price_usd", 0) > 0:
             if ad["price_usd"] > max_price:
                 continue
 
-        # Фільтр кімнат
         if rooms_req:
             r_num = ad.get("rooms_num")
             if r_num:
@@ -328,7 +320,6 @@ def search_in_db(user_text):
                 if not any(re.search(pat, full_text_tmp) for pat in room_patterns[rooms_req]):
                     continue
 
-        # Ключові слова (мають бути ВСІ знайдені)
         if keywords:
             full_text = (ad.get("title", "") + " " + ad.get("page_text", "") + " " + ad.get("extra", "")).lower()
             if not all(kw in full_text for kw in keywords):
@@ -415,7 +406,6 @@ def run_hunter():
                 f"🔗 <a href='{item['url']}'>Відкрити оголошення</a>"
             )
             
-            # Відправляємо з ПОВНОЦІННИМ фото
             if item.get("photo"):
                 send_telegram_photo(item["photo"], msg)
             else:
@@ -434,7 +424,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот v8.1 активовано!".encode("utf-8"))
+        self.wfile.write("Бот v8.2 активовано!".encode("utf-8"))
 
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
@@ -465,6 +455,6 @@ if __name__ == "__main__":
     bg_thread = threading.Thread(target=background_loop, daemon=True)
     bg_thread.start()
 
-    log(f"🚀 Запуск сервера v8.1 на порту {PORT}...")
+    log(f"🚀 Запуск сервера v8.2 на порту {PORT}...")
     server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
     server.serve_forever()
