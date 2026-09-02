@@ -17,13 +17,17 @@ scraper = cloudscraper.create_scraper(
 )
 
 OLX_SOURCES = [
-    ("OLX Оренда", "https://www.olx.ua/uk/nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir/khmelnitskiy/"),
-    ("OLX Продаж", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/")
+    ("OLX Оренда Квартир", "https://www.olx.ua/uk/nedvizhimost/kvartiry/dolgosrochnaya-arenda-kvartir/khmelnitskiy/"),
+    ("OLX Продаж Квартир", "https://www.olx.ua/uk/nedvizhimost/kvartiry/prodazha-kvartir/khmelnitskiy/"),
+    ("OLX Продаж Будинків", "https://www.olx.ua/uk/nedvizhimost/doma/prodazha-domov/khmelnitskiy/"),
+    ("OLX Продаж Землі", "https://www.olx.ua/uk/nedvizhimost/zemlya/prodazha-zemli/khmelnitskiy/")
 ]
 
 DIMRIA_SOURCES = [
-    ("DIM.RIA Оренда", "https://dom.ria.com/uk/arenda-kvartir/khmelnytskyi/"),
-    ("DIM.RIA Продаж", "https://dom.ria.com/uk/prodazha-kvartir/khmelnytskyi/")
+    ("DIM.RIA Оренда Квартир", "https://dom.ria.com/uk/arenda-kvartir/khmelnytskyi/"),
+    ("DIM.RIA Продаж Квартир", "https://dom.ria.com/uk/prodazha-kvartir/khmelnytskyi/"),
+    ("DIM.RIA Продаж Будинків", "https://dom.ria.com/uk/prodazha-domov/khmelnytskyi/"),
+    ("DIM.RIA Продаж Землі", "https://dom.ria.com/uk/prodazha-zemli/khmelnytskyi/")
 ]
 
 def load_ads_db():
@@ -124,11 +128,11 @@ def clean_html_to_text(html):
 def check_if_realtor(raw_html, clean_text, title=""):
     text_lower = (title + " " + clean_text + " " + raw_html).lower()
     
-    # 1. Детект кодів об'єктів агентств на початку заголовка (наприклад: "46204 !", "ID 12345")
+    # 1. Детект кодів об'єктів агентств (наприклад: "46204 !", "ID 12345")
     if re.search(r'^\s*\d{4,6}\b', title) or re.search(r'\b(код|id)\s*[:#]?\s*\d{4,6}\b', text_lower):
         return True
 
-    # 2. Список агентств та слів-маркерів
+    # 2. Список агентств та маркерів
     realtor_words = [
         "агентство", "комісія", "ріелтор", "рієлтор", "послуги агента", 
         "агенція", "маклер", "посередник", "представник агенції",
@@ -154,16 +158,16 @@ def inspect_olx_page(url):
         if res.status_code == 200:
             raw_html = res.text
             title_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', raw_html, re.IGNORECASE)
-            title = title_match.group(1).replace('- OLX.ua', '').replace('OLX.ua', '').strip() if title_match else "Квартира OLX"
+            title = title_match.group(1).replace('- OLX.ua', '').replace('OLX.ua', '').strip() if title_match else "Об'єкт OLX"
             photo_url = extract_photo(raw_html)
             clean_text = clean_html_to_text(raw_html)
 
             price = "Не вказано"
-            usd_matches = re.findall(r'(\$\s*[\d\s\xa0]{4,}|[\d\s\xa0]{4,}\s*\$)', clean_text)
+            usd_matches = re.findall(r'(\$\s*[\d\s\xa0]{3,}|[\d\s\xa0]{3,}\s*\$)', clean_text)
             if usd_matches:
                 price = usd_matches[0].replace('\xa0', ' ').strip()
             else:
-                uah_matches = re.findall(r'([\d\s\xa0]{5,}(?:\.\d{2})?\s*(?:грн|\u20b4))', clean_text)
+                uah_matches = re.findall(r'([\d\s\xa0]{4,}(?:\.\d{2})?\s*(?:грн|\u20b4))', clean_text)
                 if uah_matches:
                     price = uah_matches[0].replace('\xa0', ' ').strip()
 
@@ -196,7 +200,7 @@ def inspect_dimria_page(url):
             clean_text = clean_html_to_text(raw_html)
             
             title_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', raw_html, re.IGNORECASE)
-            title = title_match.group(1).replace('- DOM.RIA', '').strip() if title_match else "Квартира DIM.RIA"
+            title = title_match.group(1).replace('- DOM.RIA', '').strip() if title_match else "Об'єкт DIM.RIA"
 
             price_match = re.search(r'(\$\s*[\d\s\xa0]{3,}|[\d\s\xa0]{3,}\s*\$|[\d\s\xa0]{4,}\s*(?:грн|\u20b4))', clean_text)
             price = price_match.group(1).replace('\xa0', ' ').strip() if price_match else "Не вказано"
@@ -288,7 +292,7 @@ def search_in_db(user_text):
         "знайди", "шукаю", "квартиру", "квартира", "хмельницькому", 
         "1к", "2к", "3к", "1k", "2k", "3k", "оренда", "продаж", 
         "свіжі", "нові", "день", "сьогодні", "власник", "без комісії", 
-        "приватна", "від власника"
+        "приватна", "від власника", "будинок", "ділянка", "земля"
     ]
     raw_words = re.findall(r'[a-ua-яєіїґ0-9]+', q)
     keywords = [w for w in raw_words if len(w) >= 2 and not w.isdigit() and w not in meta_words]
@@ -345,10 +349,10 @@ def search_in_db(user_text):
         
         response += (
             f"{type_badge} ({item['source']})\n"
-            f"📌 <b>{item.get('title', 'Квартира')}</b>\n"
+            f"📌 <b>{item.get('title', 'Об\'єкт')}</b>\n"
             f"💰 <b>Ціна:</b> {item.get('price', 'Не вказано')}"
             f"{extra_line}\n"
-            f"🔗 <a href='{item['url']}'>Відкрити оголошення на OLX/DIM.RIA</a>\n\n"
+            f"🔗 <a href='{item['url']}'>Відкрити оголошення</a>\n\n"
         )
     return response
 
@@ -357,7 +361,7 @@ def run_hunter():
     initial_db_size = len(db)
     is_warmup = (initial_db_size < 20)
 
-    log(f"🔎 Сканування... В базі є {initial_db_size} об'єктів.")
+    log(f"🔎 Сканування v8.4... В базі є {initial_db_size} об'єктів.")
     all_items = scan_olx() + scan_dimria()
 
     new_items_this_run = []
@@ -395,7 +399,7 @@ def run_hunter():
         log("🛡 Розігрів бази: сповіщення вимкнено.")
         return
 
-    if len(new_owners) > 3:
+    if len(new_owners) > 5:
         log(f"🛡 Запобіжник: масовий завантаж ({len(new_owners)} шт). Без PUSH у ТГ.")
     else:
         for item in new_owners:
@@ -405,7 +409,7 @@ def run_hunter():
             msg = (
                 f"🚨 <b>[АВТО-РАДАР] Нове оголошення!</b>\n\n"
                 f"{type_badge} ({item['source']})\n"
-                f"📌 <b>{item.get('title', 'Квартира')}</b>\n"
+                f"📌 <b>{item.get('title', 'Об\'єкт')}</b>\n"
                 f"💰 <b>Ціна:</b> {item.get('price', 'Не вказано')}"
                 f"{extra_line}\n"
                 f"🔗 <a href='{item['url']}'>Відкрити оголошення</a>"
@@ -429,7 +433,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write("Бот v8.3 активовано!".encode("utf-8"))
+        self.wfile.write("Бот v8.4 активовано!".encode("utf-8"))
 
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
@@ -460,6 +464,6 @@ if __name__ == "__main__":
     bg_thread = threading.Thread(target=background_loop, daemon=True)
     bg_thread.start()
 
-    log(f"🚀 Запуск сервера v8.3 на порту {PORT}...")
+    log(f"🚀 Запуск сервера v8.4 на порту {PORT}...")
     server = HTTPServer(("0.0.0.0", PORT), SimpleHTTPRequestHandler)
     server.serve_forever()
